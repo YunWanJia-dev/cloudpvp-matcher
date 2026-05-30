@@ -4,6 +4,32 @@
 
 `cloudpvp-matcher` is the matchmaking middleware for the game battle platform.
 
+## Architecture: Clean Architecture
+
+This project follows **Clean Architecture** with strict dependency rules:
+
+```
+infrastructure → interface → application → domain
+  (外部框架)       (适配层)      (用例层)      (实体层)
+```
+
+### Directory-to-Layer Mapping
+
+| Directory | Clean Arch Layer | Contains |
+|---|---|---|
+| `internal/domain/` | Entities | entities, value objects, domain service interfaces, repository ports |
+| `internal/application/` | Use Cases | matchmaking orchestration, ticket lifecycle, state transitions |
+| `internal/interface/` | Interface Adapters | message handlers, DTOs, repository implementations |
+| `internal/infrastructure/` | Frameworks & Drivers | RabbitMQ conn/publish/consume, Apollo client, Redis client |
+
+### Dependency Rule
+
+- `domain/` MUST NOT import any other `internal/` package.
+- `application/` MAY import only `domain/`.
+- `interface/` MAY import `application/` and `domain/`.
+- `infrastructure/` MAY import any package (provides concrete implementations).
+- `cmd/main.go` is the composition root — the only place where all layers are wired together.
+
 ## Responsibility Boundaries
 
 Responsibility boundaries are defined by logic ownership, not by fixed directory structure:
@@ -12,6 +38,21 @@ Responsibility boundaries are defined by logic ownership, not by fixed directory
 - Application orchestration: state transitions, idempotency, consistency, and flow orchestration; depend on abstractions, not concrete middleware implementations.
 - Interface adaptation: request/response mapping, error mapping, auth context extraction; boundary conversion only.
 - Infrastructure implementation: integration details for RabbitMQ and Apollo.
+
+### Adding a New Feature
+
+1. Define domain entities/value objects in `domain/`
+2. Define repository/event ports (interfaces) in `domain/repository/`
+3. Implement use case in `application/service/`
+4. Implement adapters in `interface/` (handlers, DTOs, repo impls)
+5. Wire dependencies in `cmd/matcher/main.go`
+
+### Adding a New Game Mode
+
+1. Add `GameMode` constant in `domain/valueobject/game_mode.go`
+2. Implement `Matchmaker` interface in `domain/service/`
+3. Register the new matchmaker in `cmd/matcher/main.go`
+4. Add match config (in `config.yaml` or Apollo)
 
 ## Git Commit Conventions
 
