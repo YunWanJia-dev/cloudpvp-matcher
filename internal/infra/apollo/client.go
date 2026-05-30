@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"cloudpvp-matcher/internal/domain/valueobject"
+	domainconfig "cloudpvp-matcher/internal/domain/config"
 
 	"github.com/apolloconfig/agollo/v5"
 	"github.com/apolloconfig/agollo/v5/env/config"
@@ -138,7 +138,7 @@ func (c *Client) GetBool(namespace, key string, defaultValue bool) bool {
 //
 // The Apollo value is expected to be a JSON array equivalent to config.yaml:
 // [{"game_mode":"csgo/5v5/competitive","team_size":5,...}].
-func (c *Client) GetMatchConfigs(namespace string) ([]*valueobject.MatchConfig, error) {
+func (c *Client) GetMatchConfigs(namespace string) ([]*domainconfig.MatchConfig, error) {
 	raw, ok := c.get(namespace, matchModesKey)
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrConfigNotFound, matchModesKey)
@@ -169,7 +169,7 @@ func (c *Client) get(namespace, key string) (interface{}, bool) {
 	return value, true
 }
 
-func parseMatchConfigs(raw interface{}) ([]*valueobject.MatchConfig, error) {
+func parseMatchConfigs(raw interface{}) ([]*domainconfig.MatchConfig, error) {
 	data, err := rawToJSON(raw)
 	if err != nil {
 		return nil, err
@@ -180,10 +180,10 @@ func parseMatchConfigs(raw interface{}) ([]*valueobject.MatchConfig, error) {
 		return nil, fmt.Errorf("apollo: unmarshal %s: %w", matchModesKey, err)
 	}
 
-	configs := make([]*valueobject.MatchConfig, 0, len(dtos))
+	configs := make([]*domainconfig.MatchConfig, 0, len(dtos))
 	for _, dto := range dtos {
-		cfg := &valueobject.MatchConfig{
-			GameMode:       valueobject.GameMode(dto.GameMode),
+		cfg := &domainconfig.MatchConfig{
+			GameMode:       domainconfig.GameMode(dto.GameMode),
 			TeamSize:       dto.TeamSize,
 			TeamCount:      dto.TeamCount,
 			NeedConfirm:    dto.NeedConfirm,
@@ -220,7 +220,7 @@ func rawToJSON(raw interface{}) ([]byte, error) {
 	}
 }
 
-func validateMatchConfig(cfg *valueobject.MatchConfig) error {
+func validateMatchConfig(cfg *domainconfig.MatchConfig) error {
 	if cfg.GameMode == "" {
 		return errors.New("apollo: match config game_mode is required")
 	}

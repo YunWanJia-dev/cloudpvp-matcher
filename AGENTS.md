@@ -9,7 +9,7 @@
 This project follows **Clean Architecture** with strict dependency rules:
 
 ```
-infrastructure → interface → application → domain
+infrastructure → interface → usecase → domain
   (外部框架)       (适配层)      (用例层)      (实体层)
 ```
 
@@ -18,15 +18,15 @@ infrastructure → interface → application → domain
 | Directory | Clean Arch Layer | Contains |
 |---|---|---|
 | `internal/domain/` | Entities | entities, value objects, domain service interfaces, repository ports |
-| `internal/application/` | Use Cases | matchmaking orchestration, ticket lifecycle, state transitions |
+| `internal/usecase/` | Use Cases | matchmaking orchestration, ticket lifecycle, state transitions |
 | `internal/interface/` | Interface Adapters | message handlers, DTOs, repository implementations |
 | `internal/infrastructure/` | Frameworks & Drivers | RabbitMQ conn/publish/consume, Apollo client, Redis client |
 
 ### Dependency Rule
 
 - `domain/` MUST NOT import any other `internal/` package.
-- `application/` MAY import only `domain/`.
-- `interface/` MAY import `application/` and `domain/`.
+- `usecase/` MAY import only `domain/`.
+- `interface/` MAY import `usecase/` and `domain/`.
 - `infrastructure/` MAY import any package (provides concrete implementations).
 - `cmd/main.go` is the composition root — the only place where all layers are wired together.
 
@@ -35,7 +35,7 @@ infrastructure → interface → application → domain
 Responsibility boundaries are defined by logic ownership, not by fixed directory structure:
 
 - Domain logic: entities, value objects, matchmaking rules, domain services; no middleware client dependency.
-- Application orchestration: state transitions, idempotency, consistency, and flow orchestration; depend on abstractions, not concrete middleware implementations.
+- Use case orchestration: state transitions, idempotency, consistency, and flow orchestration; depend on abstractions, not concrete middleware implementations.
 - Interface adaptation: request/response mapping, error mapping, auth context extraction; boundary conversion only.
 - Infrastructure implementation: integration details for RabbitMQ and Apollo.
 
@@ -43,7 +43,7 @@ Responsibility boundaries are defined by logic ownership, not by fixed directory
 
 1. Define domain entities/value objects in `domain/`
 2. Define repository/event ports (interfaces) in `domain/repository/`
-3. Implement use case in `application/service/`
+3. Implement use case in `usecase/<business-capability>/`
 4. Implement adapters in `interface/` (handlers, DTOs, repo impls)
 5. Wire dependencies in `cmd/matcher/main.go`
 

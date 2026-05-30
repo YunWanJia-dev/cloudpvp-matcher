@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"cloudpvp-matcher/internal/domain/valueobject"
+	"cloudpvp-matcher/internal/domain/config"
 )
 
 func TestParseMatchConfigs(t *testing.T) {
@@ -28,8 +28,8 @@ func TestParseMatchConfigs(t *testing.T) {
 	}
 
 	cfg := configs[0]
-	if cfg.GameMode != valueobject.GameModeCSGO5v5 {
-		t.Fatalf("GameMode = %s, want %s", cfg.GameMode, valueobject.GameModeCSGO5v5)
+	if cfg.GameMode != config.GameModeCSGO5v5 {
+		t.Fatalf("GameMode = %s, want %s", cfg.GameMode, config.GameModeCSGO5v5)
 	}
 	if cfg.TeamSize != 5 || cfg.TeamCount != 2 {
 		t.Fatalf("team shape = %dx%d, want 5x2", cfg.TeamSize, cfg.TeamCount)
