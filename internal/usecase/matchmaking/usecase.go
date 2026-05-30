@@ -1,4 +1,4 @@
-// Package matchmaking implements matchmaking use case orchestration.
+// Package matchmaking 实现匹配流程的用例编排。
 package matchmaking
 
 import (
@@ -152,7 +152,7 @@ func (uc *UseCase) requestConfirm(ctx context.Context, match *domainmatch.Match,
 		return fmt.Errorf("发布确认请求失败: %w", err)
 	}
 
-	// 启动确认超时 goroutine
+	// 启动确认超时协程
 	go uc.startConfirmTimeout(match, cfg.ConfirmTimeout)
 
 	slog.Info("等待玩家确认", "match_id", match.ID, "timeout", cfg.ConfirmTimeout)
@@ -165,7 +165,7 @@ func (uc *UseCase) startConfirmTimeout(match *domainmatch.Match, timeout time.Du
 
 	// 超时后检查票据状态，仍在确认中的视为超时取消
 	for _, t := range match.Tickets {
-		// 此处在 goroutine 中无法获取原始 ctx，使用 context.Background()
+		// 此处在协程中无法获取原始上下文，使用 context.Background()
 		current, err := uc.ticketRepo.FindByID(context.Background(), t.ID)
 		if err != nil {
 			continue

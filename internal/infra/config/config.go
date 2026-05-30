@@ -1,4 +1,4 @@
-// Package config loads local bootstrap configuration.
+// Package config 加载本地启动配置。
 package config
 
 import (
@@ -11,11 +11,10 @@ import (
 	"github.com/spf13/viper"
 )
 
-// LoadApollo reads the local Apollo bootstrap config from config.yaml by
-// default, or the explicit file path when provided.
+// LoadApollo 从默认的 config.yaml 读取本地 Apollo 启动配置；
+// 如果传入显式路径，则读取该路径指向的配置文件。
 //
-// Environment variables can override scalar values. Both MATCHER_APOLLO_* names
-// and legacy APOLLO_* names are supported.
+// 环境变量可以覆盖标量配置值，同时支持 MATCHER_APOLLO_* 和旧版 APOLLO_* 变量名。
 func LoadApollo(path string) (apollo.Config, error) {
 	v := viper.New()
 	setDefaults(v)

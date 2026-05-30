@@ -144,12 +144,12 @@ func TestLifecycle_CleanupExpiredTickets(t *testing.T) {
 	active.CreatedAt = time.Now()
 	_ = repo.Save(ctx, active)
 
-	// 创建过期的匹配中票据（2分钟前创建，使用 sub-minute 过期检查）
+	// 创建过期的匹配中票据（2分钟前创建，用于小于一分钟粒度的过期检查）
 	expired := newTestTicket("t2", "lobby2")
 	expired.CreatedAt = time.Now().Add(-2 * time.Minute)
 	_ = repo.Save(ctx, expired)
 
-	// 清理超过 1 分钟的票据（注意：传入的 maxAge 是从 CreatedAt 算起）
+	// 清理超过 1 分钟的票据（注意：传入的 maxAge 从 CreatedAt 算起）
 	modes := []config.GameMode{config.GameModeCSGO5v5}
 	cleaned, err := lifecycle.CleanupExpiredTickets(ctx, modes, 1*time.Minute)
 	if err != nil {

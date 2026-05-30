@@ -62,7 +62,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 
 			if err := c.handler(ctx, msg.Body); err != nil {
 				slog.Error("rabbitmq handler error", "queue", c.queue, "error", err)
-				// Nack 并重新入队
+				// 拒绝消息并重新入队
 				_ = msg.Nack(false, true)
 				continue
 			}
@@ -76,11 +76,11 @@ func (c *Consumer) Run(ctx context.Context) error {
 func (c *Consumer) consume() (<-chan amqp.Delivery, error) {
 	return c.rabbitMQ.Channel().Consume(
 		c.queue,
-		"",    // consumer tag
-		false, // auto-ack: handler success controls Ack
-		false, // exclusive
-		false, // no-local
-		false, // no-wait
+		"",    // 消费者标签
+		false, // 关闭自动确认，处理成功后手动确认
+		false, // 非独占消费者
+		false, // 允许接收同连接发布的消息
+		false, // 等待服务端响应
 		nil,
 	)
 }

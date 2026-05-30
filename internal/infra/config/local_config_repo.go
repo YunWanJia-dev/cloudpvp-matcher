@@ -8,7 +8,7 @@ import (
 	domainconfig "cloudpvp-matcher/internal/domain/config"
 )
 
-// LocalConfigRepository 基于内存中的 map 实现 ConfigRepository 端口。
+// LocalConfigRepository 基于内存中的映射实现 ConfigRepository 端口。
 // 配置由启动时从 config.yaml 或 Apollo 加载后注入。
 type LocalConfigRepository struct {
 	mu      sync.RWMutex

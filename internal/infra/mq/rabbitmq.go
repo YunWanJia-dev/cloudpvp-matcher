@@ -1,4 +1,4 @@
-// Package mq provides RabbitMQ infrastructure implementations.
+// Package mq 提供 RabbitMQ 基础设施实现。
 package mq
 
 import (

@@ -43,7 +43,7 @@ func (p *Publisher) PublishMatchResult(ctx context.Context, match *domainmatch.M
 	}
 
 	result := dto.MatchResult{
-		MessageID: "", // TODO: 由上层注入 message_id
+		MessageID: "", // TODO: 待上层注入 message_id
 		MatchID:   match.ID,
 		GameMode:  string(match.GameMode),
 		Teams:     teams,
@@ -72,7 +72,7 @@ func (p *Publisher) PublishServerCreateRequest(ctx context.Context, match *domai
 	}
 
 	req := dto.ServerCreateRequest{
-		MessageID: "", // TODO: 由上层注入 message_id
+		MessageID: "", // TODO: 待上层注入 message_id
 		MatchID:   match.ID,
 		GameMode:  string(match.GameMode),
 		Players:   players,
@@ -106,7 +106,7 @@ func (p *Publisher) PublishConfirmRequest(ctx context.Context, match *domainmatc
 	}
 
 	req := dto.ConfirmRequest{
-		MessageID: "", // TODO: 由上层注入 message_id
+		MessageID: "", // TODO: 待上层注入 message_id
 		MatchID:   match.ID,
 		GameMode:  string(match.GameMode),
 		Teams:     teams,
@@ -125,8 +125,8 @@ func (p *Publisher) publish(routingKey string, body []byte) error {
 	return p.rabbitMQ.Channel().Publish(
 		p.rabbitMQ.ExchangeName(),
 		routingKey,
-		false, // mandatory
-		false, // immediate
+		false, // 不强制要求可路由
+		false, // 不要求立即投递
 		amqp.Publishing{
 			ContentType:  "application/json",
 			DeliveryMode: amqp.Persistent,

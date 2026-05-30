@@ -1,4 +1,4 @@
-// Package apollo wraps the Apollo config center client.
+// Package apollo 封装 Apollo 配置中心客户端。
 package apollo
 
 import (
@@ -18,8 +18,7 @@ import (
 
 const matchModesKey = "match_modes"
 
-// ErrConfigNotFound indicates that the requested Apollo key does not exist in
-// the namespace cache.
+// ErrConfigNotFound 表示请求的 Apollo 配置键不存在于命名空间缓存中。
 var ErrConfigNotFound = errors.New("apollo: config not found")
 
 // Client Apollo 配置客户端接口。
@@ -33,7 +32,7 @@ type Config struct {
 	AppID             string `yaml:"app_id"`
 	Cluster           string `yaml:"cluster"`
 	Namespace         string `yaml:"namespace"`
-	MetaAddr          string `yaml:"meta_addr"` // Apollo Meta Server address.
+	MetaAddr          string `yaml:"meta_addr"` // Apollo Meta Server 地址。
 	Secret            string `yaml:"secret"`
 	IsBackupConfig    bool   `yaml:"is_backup_config"`
 	BackupConfigPath  string `yaml:"backup_config_path"`
@@ -41,7 +40,7 @@ type Config struct {
 	SyncServerTimeout int    `yaml:"sync_server_timeout"`
 }
 
-// NewClient creates and starts an agollo Apollo client.
+// NewClient 创建并启动 agollo Apollo 客户端。
 func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -87,7 +86,7 @@ func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 	return &Client{client: client, namespace: cfg.Namespace}, nil
 }
 
-// GetString 根据配置 key 获取字符串配置值。
+// GetString 根据配置键获取字符串配置值。
 func (c *Client) GetString(namespace, key string, defaultValue string) string {
 	value, ok := c.get(namespace, key)
 	if !ok {
@@ -106,7 +105,7 @@ func (c *Client) GetString(namespace, key string, defaultValue string) string {
 	}
 }
 
-// GetInt 根据配置 key 获取整数配置值。
+// GetInt 根据配置键获取整数配置值。
 func (c *Client) GetInt(namespace, key string, defaultValue int) int {
 	value, ok := c.get(namespace, key)
 	if !ok {
@@ -120,7 +119,7 @@ func (c *Client) GetInt(namespace, key string, defaultValue int) int {
 	return n
 }
 
-// GetBool reads a boolean value from Apollo.
+// GetBool 从 Apollo 读取布尔配置值。
 func (c *Client) GetBool(namespace, key string, defaultValue bool) bool {
 	value, ok := c.get(namespace, key)
 	if !ok {
@@ -134,9 +133,9 @@ func (c *Client) GetBool(namespace, key string, defaultValue bool) bool {
 	return b
 }
 
-// GetMatchConfigs reads the match_modes JSON config from Apollo.
+// GetMatchConfigs 从 Apollo 读取 match_modes JSON 配置。
 //
-// The Apollo value is expected to be a JSON array equivalent to config.yaml:
+// Apollo 配置值应为与 config.yaml 等价的 JSON 数组：
 // [{"game_mode":"csgo/5v5/competitive","team_size":5,...}].
 func (c *Client) GetMatchConfigs(namespace string) ([]*domainconfig.MatchConfig, error) {
 	raw, ok := c.get(namespace, matchModesKey)

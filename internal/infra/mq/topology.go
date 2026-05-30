@@ -2,17 +2,17 @@ package mq
 
 import "fmt"
 
-// DeclareTopology 声明 matcher 使用的 RabbitMQ exchange、queue 和 binding。
+// DeclareTopology 声明匹配服务使用的 RabbitMQ 交换器、队列和绑定。
 func DeclareTopology(rabbitMQ *RabbitMQ) error {
 	ch := rabbitMQ.Channel()
 
 	if err := ch.ExchangeDeclare(
 		rabbitMQ.ExchangeName(),
 		"topic",
-		true,  // durable
-		false, // auto-delete
-		false, // internal
-		false, // no-wait
+		true,  // 持久化
+		false, // 不自动删除
+		false, // 非内部交换器
+		false, // 等待服务端响应
 		nil,
 	); err != nil {
 		return fmt.Errorf("rabbitmq: declare exchange failed: %w", err)
@@ -38,10 +38,10 @@ func declareQueueBinding(rabbitMQ *RabbitMQ, queueName, routingKey string) error
 
 	if _, err := ch.QueueDeclare(
 		queueName,
-		true,  // durable
-		false, // auto-delete
-		false, // exclusive
-		false, // no-wait
+		true,  // 持久化
+		false, // 不自动删除
+		false, // 非独占队列
+		false, // 等待服务端响应
 		nil,
 	); err != nil {
 		return fmt.Errorf("rabbitmq: declare queue %s failed: %w", queueName, err)

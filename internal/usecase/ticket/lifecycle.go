@@ -1,4 +1,4 @@
-// Package ticket implements ticket lifecycle use cases.
+// Package ticket 实现票据生命周期用例。
 package ticket
 
 import (
