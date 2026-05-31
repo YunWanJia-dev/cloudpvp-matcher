@@ -20,6 +20,7 @@ func DeclareTopology(rabbitMQ *RabbitMQ) error {
 
 	queues := map[string]string{
 		RequestQueue:      RequestRoutingKey,
+		QueuedQueue:       QueuedRoutingKey,
 		ResultQueue:       ResultRoutingKey,
 		ServerCreateQueue: ServerCreateRoutingKey,
 		ConfirmQueue:      ConfirmBindingRoutingKey,

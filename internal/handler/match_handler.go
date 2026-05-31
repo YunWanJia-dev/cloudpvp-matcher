@@ -52,13 +52,7 @@ func (h *MatchHandler) Handle(ctx context.Context, body []byte) error {
 		})
 	}
 
-	ticketID := fmt.Sprintf("ticket-%s-%d", req.LobbyID, time.Now().UnixMilli())
-	ticket := toDomainTicket(
-		ticketID,
-		req.LobbyID,
-		config.GameMode(req.GameMode),
-		members,
-	)
+	ticket := toDomainTicket(req.LobbyID, config.GameMode(req.GameMode), members)
 
 	slog.Info("收到匹配请求",
 		"message_id", req.MessageID,
@@ -67,17 +61,15 @@ func (h *MatchHandler) Handle(ctx context.Context, body []byte) error {
 		"member_count", len(members),
 	)
 
-	return h.usecase.EnqueueAndMatch(ctx, ticket)
+	return h.usecase.Enqueue(ctx, ticket)
 }
 
-func toDomainTicket(ticketID, lobbyID string, gameMode config.GameMode, members []ticket.PlayerInfo) *ticket.Ticket {
+func toDomainTicket(lobbyID string, gameMode config.GameMode, members []ticket.PlayerInfo) *ticket.Ticket {
 	now := time.Now()
 	return &ticket.Ticket{
-		ID:        ticketID,
 		LobbyID:   lobbyID,
 		GameMode:  gameMode,
 		Members:   members,
-		Status:    ticket.TicketStatusPending,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}

@@ -71,6 +71,7 @@ func Run(ctx context.Context, opts Options) error {
 	}
 
 	ticketRepo := cache.NewRedisTicketRepository(redisClient)
+	lockManager := cache.NewRedisLockManager(redisClient)
 	matchConfigs, err := apolloClient.GetMatchConfigs("")
 	if err != nil {
 		return fmt.Errorf("读取 Apollo 匹配配置失败: %w", err)
@@ -84,11 +85,18 @@ func Run(ctx context.Context, opts Options) error {
 		// 后续新增游戏模式在此注册
 	}
 
-	matchmakingUC := matchmaking.NewUseCase(ticketRepo, configRepo, publisher, matchmakers)
+	matchmakingUC := matchmaking.NewUseCase(
+		ticketRepo,
+		configRepo,
+		publisher,
+		matchmakers,
+		matchmaking.WithLockManager(lockManager),
+	)
 	matchHandler := handler.NewMatchHandler(matchmakingUC)
 	requestConsumer := mq.NewConsumer(rabbitMQ, mq.RequestQueue, matchHandler.Handle)
 
 	go runConsumer(runCtx, requestConsumer)
+	go runMatchWorker(runCtx, matchmakingUC, configRepo)
 	go runTicketCleanup(runCtx, ticketRepo)
 
 	slog.Info("cloudpvp-matcher 已启动")
@@ -107,6 +115,36 @@ func runConsumer(ctx context.Context, requestConsumer handler.Consumer) {
 	slog.Info("匹配请求消费者启动", "queue", mq.RequestQueue)
 	if err := requestConsumer.Run(ctx); err != nil && err != context.Canceled {
 		slog.Error("匹配请求消费者异常退出", "error", err)
+	}
+}
+
+func runMatchWorker(ctx context.Context, matchmakingUC *matchmaking.UseCase, configRepo config.ConfigRepository) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			configs, err := configRepo.GetAllMatchConfigs(ctx)
+			if err != nil {
+				slog.Warn("读取匹配配置失败", "error", err)
+				continue
+			}
+			for _, cfg := range configs {
+				for {
+					matched, err := matchmakingUC.RunMatchOnce(ctx, cfg.GameMode)
+					if err != nil {
+						slog.Warn("匹配扫描失败", "mode", cfg.GameMode, "error", err)
+						break
+					}
+					if !matched {
+						break
+					}
+				}
+			}
+		}
 	}
 }
 

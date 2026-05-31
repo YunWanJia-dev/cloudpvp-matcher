@@ -1,6 +1,6 @@
 # cloudpvp-matcher
 
-`cloudpvp-matcher` 是 cloudpvp 对战平台的匹配服务。服务从 RabbitMQ 接收匹配请求，基于游戏模式配置和领域匹配器生成对局，并向外发布匹配结果、建服请求或确认请求。
+`cloudpvp-matcher` 是 cloudpvp 对战平台的匹配服务。服务从 RabbitMQ 接收匹配请求，先将合法 lobby 持久化到匹配队列并发布入队成功事件，再由后台匹配扫描器基于游戏模式配置和领域匹配器生成对局。
 
 ## 架构
 
@@ -33,11 +33,11 @@ cloudpvp-matcher/
 │   │   └── app.go               # 应用装配：配置、连接、仓储、用例、消费者、定时任务
 │   ├── domain/
 │   │   ├── config/              # GameMode、MatchConfig、配置仓储端口
-│   │   ├── match/               # Match、Matchmaker、事件发布端口、CSGO 5v5 匹配器
-│   │   └── ticket/              # Ticket、PlayerInfo、TicketStatus、票据仓储端口
+│   │   ├── match/               # Match、Team、Matchmaker、事件/锁端口、CSGO 5v5 匹配器
+│   │   └── ticket/              # Ticket、PlayerInfo、队列事件端口、票据仓储端口
 │   ├── usecase/
-│   │   ├── matchmaking/         # 入队、查配置、匹配、确认、结果发布编排
-│   │   └── ticket/              # 票据取消和过期清理
+│   │   ├── matchmaking/         # 入队、匹配扫描、确认、结果发布编排
+│   │   └── ticket/              # 队列票据取消和过期清理
 │   ├── handler/
 │   │   ├── dto/                 # RabbitMQ 入站/出站 JSON 模型
 │   │   ├── consumer.go          # 消费者端口
@@ -70,9 +70,10 @@ go run ./cmd/matcher -config ./config.yaml
 4. 初始化 Redis、RabbitMQ，并声明 RabbitMQ 拓扑。
 5. 装配 Redis 票据仓储、本地配置仓储、RabbitMQ 事件发布者。
 6. 注册领域匹配器，目前为 `CSGO5v5Matchmaker`。
-7. 创建 `matchmaking.UseCase` 和 `MatchHandler`。
+7. 创建 Redis 分布式锁、`matchmaking.UseCase` 和 `MatchHandler`。
 8. 注册并启动匹配请求消费者。
-9. 启动票据过期清理定时任务，每 30 秒清理超过 5 分钟仍处于匹配中的票据。
+9. 启动后台匹配扫描器，每秒按游戏模式尝试组装对局。
+10. 启动票据过期清理定时任务，每 30 秒清理超过 5 分钟仍在队列中的票据。
 
 ## RabbitMQ 拓扑
 
@@ -83,6 +84,7 @@ go run ./cmd/matcher -config ./config.yaml
 | 队列 | 绑定路由键 | 当前服务角色 |
 |---|---|---|
 | `matchmaking.request.queue` | `matchmaking.request` | 本服务消费 |
+| `matchmaking.queued.queue` | `matchmaking.queued` | 本服务发布，外部服务消费 |
 | `match.result.queue` | `match.result` | 本服务发布，外部服务消费 |
 | `server.create.queue` | `server.create` | 本服务发布，外部服务消费 |
 | `match.confirm.queue` | `match.confirm.*` | 预留确认相关队列，当前服务发布 `match.confirm.request` |
@@ -95,7 +97,7 @@ go run ./cmd/matcher -config ./config.yaml
 |---|---|---|---|
 | `matchmaking.request.queue` | `matchmaking.request` | `handler.MatchHandler` | `dto.MatchRequest` |
 
-`MatchHandler` 会校验 `lobby_id`、`game_mode`、`members`，再把 DTO 转换为领域 `ticket.Ticket`，交给 `matchmaking.UseCase.EnqueueAndMatch` 编排后续流程。
+`MatchHandler` 会校验 `lobby_id`、`game_mode`、`members`，再把 DTO 转换为领域 `ticket.Ticket`，交给 `matchmaking.UseCase.Enqueue` 入队。入队方法不直接执行匹配。
 
 ### `MatchRequest`
 
@@ -135,13 +137,26 @@ go run ./cmd/matcher -config ./config.yaml
 
 ## 本服务发布的路由和模型
 
-匹配成功后，服务通过 `infra/mq.Publisher` 发布以下消息。
+入队和匹配成功后，服务通过 `infra/mq.Publisher` 发布以下消息。
 
 | 路由键 | 模型 | 触发条件 | 说明 |
 |---|---|---|---|
+| `matchmaking.queued` | `dto.TicketQueued` | lobby 成功持久化到匹配队列 | 通知业务服务 lobby 已进入匹配队列 |
 | `match.result` | `dto.MatchResult` | 匹配成功且无需玩家确认 | 通知业务服务匹配结果 |
 | `server.create` | `dto.ServerCreateRequest` | 匹配成功且无需玩家确认 | 请求服务器管理服务创建对局服务器 |
 | `match.confirm.request` | `dto.ConfirmRequest` | 匹配成功且配置 `need_confirm=true` | 请求玩家确认匹配 |
+
+### `TicketQueued`
+
+```json
+{
+  "message_id": "",
+  "lobby_id": "lobby-001",
+  "game_mode": "csgo/5v5/competitive",
+  "member_count": 3,
+  "queued_at": "2026-05-30T12:00:00Z"
+}
+```
 
 ### `MatchResult`
 
@@ -153,6 +168,7 @@ go run ./cmd/matcher -config ./config.yaml
   "teams": [
     {
       "lobby_id": "lobby-001",
+      "lobby_ids": ["lobby-001"],
       "members": [
         {
           "player_id": "player-001",
@@ -194,6 +210,7 @@ go run ./cmd/matcher -config ./config.yaml
   "teams": [
     {
       "lobby_id": "lobby-001",
+      "lobby_ids": ["lobby-001"],
       "members": [
         {
           "player_id": "player-001",
@@ -211,6 +228,7 @@ go run ./cmd/matcher -config ./config.yaml
 注意：
 
 - 当前发布者里 `message_id` 仍为空字符串，代码中标记为待上层注入。
+- `TeamInfo.lobby_ids` 表示该队伍由哪些 lobby 拼成；单 lobby 队伍会同时填充兼容字段 `lobby_id`。
 - `ConfirmRequest.timeout_seconds` 字段已在 DTO 中定义，但当前发布者尚未填充，实际发送值为 `0`。
 
 ## 配置项

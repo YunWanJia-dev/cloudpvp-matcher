@@ -4,6 +4,9 @@ const (
 	RequestQueue      = "matchmaking.request.queue"
 	RequestRoutingKey = "matchmaking.request"
 
+	QueuedQueue      = "matchmaking.queued.queue"
+	QueuedRoutingKey = "matchmaking.queued"
+
 	ResultQueue      = "match.result.queue"
 	ResultRoutingKey = "match.result"
 

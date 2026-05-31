@@ -5,4 +5,5 @@ package ticket
 type PlayerInfo struct {
 	PlayerID string `json:"player_id"`
 	Name     string `json:"name"`
+	Region   string `json:"region,omitempty"`
 }

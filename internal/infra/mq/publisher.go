@@ -7,6 +7,7 @@ import (
 	"time"
 
 	domainmatch "cloudpvp-matcher/internal/domain/match"
+	domainticket "cloudpvp-matcher/internal/domain/ticket"
 	"cloudpvp-matcher/internal/handler/dto"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -26,27 +27,11 @@ func NewPublisher(rabbitMQ *RabbitMQ) *Publisher {
 
 // PublishMatchResult 发布匹配结果到 cloudpvp-biz。
 func (p *Publisher) PublishMatchResult(ctx context.Context, match *domainmatch.Match) error {
-	teams := make([]dto.TeamInfo, 0, len(match.Tickets))
-	for _, t := range match.Tickets {
-		members := make([]dto.MemberInfo, 0, len(t.Members))
-		for _, m := range t.Members {
-			members = append(members, dto.MemberInfo{
-				PlayerID: m.PlayerID,
-				Name:     m.Name,
-				Region:   m.Region,
-			})
-		}
-		teams = append(teams, dto.TeamInfo{
-			LobbyID: t.LobbyID,
-			Members: members,
-		})
-	}
-
 	result := dto.MatchResult{
 		MessageID: "", // TODO: 待上层注入 message_id
 		MatchID:   match.ID,
 		GameMode:  string(match.GameMode),
-		Teams:     teams,
+		Teams:     toTeamInfos(match),
 		MatchedAt: match.CreatedAt,
 	}
 
@@ -60,22 +45,11 @@ func (p *Publisher) PublishMatchResult(ctx context.Context, match *domainmatch.M
 
 // PublishServerCreateRequest 发布创建服务器请求。
 func (p *Publisher) PublishServerCreateRequest(ctx context.Context, match *domainmatch.Match) error {
-	players := make([]dto.MemberInfo, 0)
-	for _, t := range match.Tickets {
-		for _, m := range t.Members {
-			players = append(players, dto.MemberInfo{
-				PlayerID: m.PlayerID,
-				Name:     m.Name,
-				Region:   m.Region,
-			})
-		}
-	}
-
 	req := dto.ServerCreateRequest{
 		MessageID: "", // TODO: 待上层注入 message_id
 		MatchID:   match.ID,
 		GameMode:  string(match.GameMode),
-		Players:   players,
+		Players:   toMemberInfos(match.AllPlayers()),
 		CreatedAt: match.CreatedAt,
 	}
 
@@ -89,27 +63,11 @@ func (p *Publisher) PublishServerCreateRequest(ctx context.Context, match *domai
 
 // PublishConfirmRequest 发布玩家确认请求。
 func (p *Publisher) PublishConfirmRequest(ctx context.Context, match *domainmatch.Match) error {
-	teams := make([]dto.TeamInfo, 0, len(match.Tickets))
-	for _, t := range match.Tickets {
-		members := make([]dto.MemberInfo, 0, len(t.Members))
-		for _, m := range t.Members {
-			members = append(members, dto.MemberInfo{
-				PlayerID: m.PlayerID,
-				Name:     m.Name,
-				Region:   m.Region,
-			})
-		}
-		teams = append(teams, dto.TeamInfo{
-			LobbyID: t.LobbyID,
-			Members: members,
-		})
-	}
-
 	req := dto.ConfirmRequest{
 		MessageID: "", // TODO: 待上层注入 message_id
 		MatchID:   match.ID,
 		GameMode:  string(match.GameMode),
-		Teams:     teams,
+		Teams:     toTeamInfos(match),
 		CreatedAt: match.CreatedAt,
 	}
 
@@ -119,6 +77,29 @@ func (p *Publisher) PublishConfirmRequest(ctx context.Context, match *domainmatc
 	}
 
 	return p.publish(ConfirmRequestRoutingKey, body)
+}
+
+// PublishTicketQueued 发布 lobby 入队成功事件。
+func (p *Publisher) PublishTicketQueued(ctx context.Context, ticket *domainticket.Ticket) error {
+	queuedAt := ticket.UpdatedAt
+	if queuedAt.IsZero() {
+		queuedAt = time.Now()
+	}
+
+	event := dto.TicketQueued{
+		MessageID:   "", // TODO: 待上层注入 message_id
+		LobbyID:     ticket.LobbyID,
+		GameMode:    string(ticket.GameMode),
+		MemberCount: ticket.TeamSize(),
+		QueuedAt:    queuedAt,
+	}
+
+	body, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("publish ticket queued: marshal: %w", err)
+	}
+
+	return p.publish(QueuedRoutingKey, body)
 }
 
 func (p *Publisher) publish(routingKey string, body []byte) error {
@@ -134,4 +115,32 @@ func (p *Publisher) publish(routingKey string, body []byte) error {
 			Body:         body,
 		},
 	)
+}
+
+func toTeamInfos(match *domainmatch.Match) []dto.TeamInfo {
+	teams := make([]dto.TeamInfo, 0, len(match.Teams))
+	for _, team := range match.Teams {
+		lobbyIDs := team.LobbyIDs()
+		teamInfo := dto.TeamInfo{
+			LobbyIDs: lobbyIDs,
+			Members:  toMemberInfos(team.Members()),
+		}
+		if len(lobbyIDs) == 1 {
+			teamInfo.LobbyID = lobbyIDs[0]
+		}
+		teams = append(teams, teamInfo)
+	}
+	return teams
+}
+
+func toMemberInfos(players []domainticket.PlayerInfo) []dto.MemberInfo {
+	members := make([]dto.MemberInfo, 0, len(players))
+	for _, player := range players {
+		members = append(members, dto.MemberInfo{
+			PlayerID: player.PlayerID,
+			Name:     player.Name,
+			Region:   player.Region,
+		})
+	}
+	return members
 }

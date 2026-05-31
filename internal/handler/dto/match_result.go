@@ -13,6 +13,7 @@ type MatchResult struct {
 
 // TeamInfo 描述匹配结果中的一个队伍。
 type TeamInfo struct {
-	LobbyID string       `json:"lobby_id"`
-	Members []MemberInfo `json:"members"`
+	LobbyID  string       `json:"lobby_id,omitempty"`
+	LobbyIDs []string     `json:"lobby_ids,omitempty"`
+	Members  []MemberInfo `json:"members"`
 }

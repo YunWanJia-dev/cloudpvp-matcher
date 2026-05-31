@@ -11,7 +11,7 @@ type Matchmaker interface {
 	// Supports 返回此匹配器是否支持给定的游戏模式。
 	Supports(mode config.GameMode) bool
 
-	// FindMatch 尝试在池中为给定候选者寻找匹配的对手。
+	// FindMatch 尝试从池中组装一个满足配置的完整对局。
 	// 如果找到对手则返回 Match，否则返回 nil（暂无合适对手）。
-	FindMatch(candidate *ticket.Ticket, pool []*ticket.Ticket) *Match
+	FindMatch(pool []*ticket.Ticket, cfg *config.MatchConfig) *Match
 }

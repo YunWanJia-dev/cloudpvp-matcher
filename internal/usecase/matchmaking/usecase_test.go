@@ -2,6 +2,7 @@ package matchmaking_test
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -27,14 +28,14 @@ func (m *mockTicketRepository) Save(ctx context.Context, ticket *domainticket.Ti
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t := *ticket
-	m.tickets[ticket.ID] = &t
+	m.tickets[ticket.LobbyID] = &t
 	return nil
 }
 
-func (m *mockTicketRepository) FindByID(ctx context.Context, id string) (*domainticket.Ticket, error) {
+func (m *mockTicketRepository) FindByLobbyID(ctx context.Context, lobbyID string) (*domainticket.Ticket, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	t, ok := m.tickets[id]
+	t, ok := m.tickets[lobbyID]
 	if !ok {
 		return nil, nil
 	}
@@ -42,24 +43,12 @@ func (m *mockTicketRepository) FindByID(ctx context.Context, id string) (*domain
 	return &t2, nil
 }
 
-func (m *mockTicketRepository) FindByLobbyID(ctx context.Context, lobbyID string) (*domainticket.Ticket, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for _, t := range m.tickets {
-		if t.LobbyID == lobbyID {
-			t2 := *t
-			return &t2, nil
-		}
-	}
-	return nil, nil
-}
-
-func (m *mockTicketRepository) FindByStatus(ctx context.Context, mode config.GameMode, status domainticket.TicketStatus) ([]*domainticket.Ticket, error) {
+func (m *mockTicketRepository) ListByGameMode(ctx context.Context, mode config.GameMode) ([]*domainticket.Ticket, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var result []*domainticket.Ticket
 	for _, t := range m.tickets {
-		if t.GameMode == mode && t.Status == status {
+		if t.GameMode == mode {
 			t2 := *t
 			result = append(result, &t2)
 		}
@@ -67,21 +56,10 @@ func (m *mockTicketRepository) FindByStatus(ctx context.Context, mode config.Gam
 	return result, nil
 }
 
-func (m *mockTicketRepository) UpdateStatus(ctx context.Context, id string, status domainticket.TicketStatus) error {
+func (m *mockTicketRepository) Remove(ctx context.Context, lobbyID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	t, ok := m.tickets[id]
-	if !ok {
-		return nil
-	}
-	t.Status = status
-	return nil
-}
-
-func (m *mockTicketRepository) Remove(ctx context.Context, id string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.tickets, id)
+	delete(m.tickets, lobbyID)
 	return nil
 }
 
@@ -116,15 +94,18 @@ func (m *mockConfigRepository) GetAllMatchConfigs(ctx context.Context) ([]*confi
 }
 
 type mockEventPublisher struct {
+	Queued           []*domainticket.Ticket
 	MatchResults     []*domainmatch.Match
 	ServerCreateReqs []*domainmatch.Match
 	ConfirmReqs      []*domainmatch.Match
 }
 
-var _ domainmatch.EventPublisher = (*mockEventPublisher)(nil)
+var _ matchmaking.Publisher = (*mockEventPublisher)(nil)
 
-func newMockEventPublisher() *mockEventPublisher {
-	return &mockEventPublisher{}
+func (m *mockEventPublisher) PublishTicketQueued(ctx context.Context, ticket *domainticket.Ticket) error {
+	t := *ticket
+	m.Queued = append(m.Queued, &t)
+	return nil
 }
 
 func (m *mockEventPublisher) PublishMatchResult(ctx context.Context, match *domainmatch.Match) error {
@@ -142,38 +123,44 @@ func (m *mockEventPublisher) PublishConfirmRequest(ctx context.Context, match *d
 	return nil
 }
 
-func newTestTicket(id, lobbyID string) *domainticket.Ticket {
+type mockLockManager struct {
+	mu   sync.Mutex
+	keys []string
+}
+
+var _ domainmatch.LockManager = (*mockLockManager)(nil)
+
+func (m *mockLockManager) WithLock(ctx context.Context, key string, ttl time.Duration, fn func(context.Context) error) error {
+	m.mu.Lock()
+	m.keys = append(m.keys, key)
+	m.mu.Unlock()
+	return fn(ctx)
+}
+
+func newTestTicket(lobbyID string, memberCount int) *domainticket.Ticket {
 	now := time.Now()
 	return &domainticket.Ticket{
-		ID:       id,
-		LobbyID:  lobbyID,
-		GameMode: config.GameModeCSGO5v5,
-		Members: []domainticket.PlayerInfo{
-			{PlayerID: "p1", Name: "Player1", Region: "cn-east"},
-			{PlayerID: "p2", Name: "Player2", Region: "cn-east"},
-			{PlayerID: "p3", Name: "Player3", Region: "cn-east"},
-			{PlayerID: "p4", Name: "Player4", Region: "cn-east"},
-			{PlayerID: "p5", Name: "Player5", Region: "cn-east"},
-		},
-		Status:    domainticket.TicketStatusMatching,
+		LobbyID:   lobbyID,
+		GameMode:  config.GameModeCSGO5v5,
+		Members:   newTestMembers(lobbyID, memberCount),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
 }
 
-func newTestMembers(n int) []domainticket.PlayerInfo {
+func newTestMembers(prefix string, n int) []domainticket.PlayerInfo {
 	members := make([]domainticket.PlayerInfo, n)
 	for i := 0; i < n; i++ {
 		members[i] = domainticket.PlayerInfo{
-			PlayerID: "player-" + string(rune('a'+i)),
-			Name:     "Player " + string(rune('A'+i)),
+			PlayerID: fmt.Sprintf("%s-player-%d", prefix, i+1),
+			Name:     fmt.Sprintf("Player %d", i+1),
 			Region:   "cn-east",
 		}
 	}
 	return members
 }
 
-func setupUseCase() (*matchmaking.UseCase, *mockTicketRepository, *mockEventPublisher) {
+func setupUseCase(options ...matchmaking.Option) (*matchmaking.UseCase, *mockTicketRepository, *mockEventPublisher) {
 	ticketRepo := newMockTicketRepository()
 	configRepo := newMockConfigRepository([]*config.MatchConfig{
 		{
@@ -185,93 +172,103 @@ func setupUseCase() (*matchmaking.UseCase, *mockTicketRepository, *mockEventPubl
 			MatchTimeout:   5 * time.Minute,
 		},
 	})
-	publisher := newMockEventPublisher()
+	publisher := &mockEventPublisher{}
+	matchmakers := []domainmatch.Matchmaker{domainmatch.NewCSGO5v5Matchmaker()}
 
-	matchmakers := []domainmatch.Matchmaker{
-		domainmatch.NewCSGO5v5Matchmaker(),
-	}
-
-	uc := matchmaking.NewUseCase(ticketRepo, configRepo, publisher, matchmakers)
+	uc := matchmaking.NewUseCase(ticketRepo, configRepo, publisher, matchmakers, options...)
 	return uc, ticketRepo, publisher
 }
 
-func TestUseCase_EnqueueAndMatch_Success(t *testing.T) {
+func TestUseCase_Enqueue_PersistsAndPublishesQueuedEvent(t *testing.T) {
 	uc, ticketRepo, publisher := setupUseCase()
 	ctx := context.Background()
 
-	// 先入队第一张票据（此时应无对手，留在池中）
-	ticket1 := newTestTicket("t1", "lobby1")
-	ticket1.Status = domainticket.TicketStatusPending
-
-	err := uc.EnqueueAndMatch(ctx, ticket1)
+	ticket := newTestTicket("lobby1", 3)
+	err := uc.Enqueue(ctx, ticket)
 	if err != nil {
-		t.Fatalf("第一张票据入队不应失败: %v", err)
+		t.Fatalf("未满员 lobby 入队不应失败: %v", err)
 	}
 
-	saved1, _ := ticketRepo.FindByID(ctx, "t1")
-	if saved1 == nil {
+	saved, _ := ticketRepo.FindByLobbyID(ctx, "lobby1")
+	if saved == nil {
 		t.Fatal("票据应已保存")
 	}
-	if saved1.Status != domainticket.TicketStatusMatching {
-		t.Errorf("状态应为 Matching，实际 %s", saved1.Status)
+	if saved.TeamSize() != 3 {
+		t.Fatalf("应保留原 lobby 人数，实际 %d", saved.TeamSize())
+	}
+	if len(publisher.Queued) != 1 {
+		t.Fatalf("应发布1个入队成功事件，实际 %d 个", len(publisher.Queued))
 	}
 	if len(publisher.MatchResults) != 0 {
-		t.Error("无对手时不应发布匹配结果")
+		t.Error("入队阶段不应直接发布匹配结果")
+	}
+}
+
+func TestUseCase_Enqueue_RejectsOversizedLobby(t *testing.T) {
+	uc, ticketRepo, _ := setupUseCase()
+	ctx := context.Background()
+
+	err := uc.Enqueue(ctx, newTestTicket("lobby1", 6))
+	if err == nil {
+		t.Fatal("超过队伍上限时应返回错误")
+	}
+	if saved, _ := ticketRepo.FindByLobbyID(ctx, "lobby1"); saved != nil {
+		t.Error("非法票据不应持久化")
+	}
+}
+
+func TestUseCase_Enqueue_UnknownMode(t *testing.T) {
+	uc, _, _ := setupUseCase()
+	ctx := context.Background()
+
+	ticket := newTestTicket("lobby1", 5)
+	ticket.GameMode = "unknown/mode"
+
+	err := uc.Enqueue(ctx, ticket)
+	if err == nil {
+		t.Error("未知模式时应返回错误")
+	}
+}
+
+func TestUseCase_RunMatchOnce_ComposesPartialTeams(t *testing.T) {
+	uc, ticketRepo, publisher := setupUseCase()
+	ctx := context.Background()
+
+	for _, ticket := range []*domainticket.Ticket{
+		newTestTicket("lobby1", 3),
+		newTestTicket("lobby2", 2),
+		newTestTicket("lobby3", 4),
+		newTestTicket("lobby4", 1),
+	} {
+		if err := uc.Enqueue(ctx, ticket); err != nil {
+			t.Fatalf("入队失败: %v", err)
+		}
 	}
 
-	// 入队第二张票据（应找到匹配）
-	ticket2 := newTestTicket("t2", "lobby2")
-	ticket2.Status = domainticket.TicketStatusPending
-
-	err = uc.EnqueueAndMatch(ctx, ticket2)
+	matched, err := uc.RunMatchOnce(ctx, config.GameModeCSGO5v5)
 	if err != nil {
-		t.Fatalf("第二张票据入队不应失败: %v", err)
+		t.Fatalf("匹配扫描不应失败: %v", err)
 	}
-
+	if !matched {
+		t.Fatal("应形成一场对局")
+	}
 	if len(publisher.MatchResults) != 1 {
 		t.Fatalf("应发布1个匹配结果，实际 %d 个", len(publisher.MatchResults))
 	}
 	if len(publisher.ServerCreateReqs) != 1 {
 		t.Fatalf("应发布1个创建服务器请求，实际 %d 个", len(publisher.ServerCreateReqs))
 	}
+	if len(publisher.MatchResults[0].Teams) != 2 {
+		t.Fatalf("应组成2支队伍，实际 %d 支", len(publisher.MatchResults[0].Teams))
+	}
 
-	for _, id := range []string{"t1", "t2"} {
-		saved, _ := ticketRepo.FindByID(ctx, id)
-		if saved == nil || saved.Status != domainticket.TicketStatusConfirmed {
-			t.Errorf("票据 %s 状态应为 Confirmed", id)
-		}
+	remaining, _ := ticketRepo.ListByGameMode(ctx, config.GameModeCSGO5v5)
+	if len(remaining) != 0 {
+		t.Fatalf("匹配成功后票据应离开队列，剩余 %d 张", len(remaining))
 	}
 }
 
-func TestUseCase_EnqueueAndMatch_InvalidTeamSize(t *testing.T) {
-	uc, _, _ := setupUseCase()
-	ctx := context.Background()
-
-	ticket := newTestTicket("t1", "lobby1")
-	ticket.Members = newTestMembers(3)
-	ticket.Status = domainticket.TicketStatusPending
-
-	err := uc.EnqueueAndMatch(ctx, ticket)
-	if err == nil {
-		t.Error("人数不足时应返回错误")
-	}
-}
-
-func TestUseCase_EnqueueAndMatch_UnknownMode(t *testing.T) {
-	uc, _, _ := setupUseCase()
-	ctx := context.Background()
-
-	ticket := newTestTicket("t1", "lobby1")
-	ticket.GameMode = "unknown/mode"
-	ticket.Status = domainticket.TicketStatusPending
-
-	err := uc.EnqueueAndMatch(ctx, ticket)
-	if err == nil {
-		t.Error("未知模式时应返回错误")
-	}
-}
-
-func TestUseCase_EnqueueAndMatch_NeedConfirm(t *testing.T) {
+func TestUseCase_RunMatchOnce_NeedConfirm(t *testing.T) {
 	ticketRepo := newMockTicketRepository()
 	configRepo := newMockConfigRepository([]*config.MatchConfig{
 		{
@@ -283,34 +280,43 @@ func TestUseCase_EnqueueAndMatch_NeedConfirm(t *testing.T) {
 			MatchTimeout:   5 * time.Minute,
 		},
 	})
-	publisher := newMockEventPublisher()
-
+	publisher := &mockEventPublisher{}
 	uc := matchmaking.NewUseCase(
-		ticketRepo, configRepo, publisher,
+		ticketRepo,
+		configRepo,
+		publisher,
 		[]domainmatch.Matchmaker{domainmatch.NewCSGO5v5Matchmaker()},
 	)
-
 	ctx := context.Background()
 
-	ticket1 := newTestTicket("t1", "lobby1")
-	ticket1.Status = domainticket.TicketStatusPending
-	_ = uc.EnqueueAndMatch(ctx, ticket1)
+	_ = uc.Enqueue(ctx, newTestTicket("lobby1", 5))
+	_ = uc.Enqueue(ctx, newTestTicket("lobby2", 5))
 
-	ticket2 := newTestTicket("t2", "lobby2")
-	ticket2.Status = domainticket.TicketStatusPending
-	_ = uc.EnqueueAndMatch(ctx, ticket2)
-
+	matched, err := uc.RunMatchOnce(ctx, config.GameModeCSGO5v5)
+	if err != nil {
+		t.Fatalf("匹配扫描不应失败: %v", err)
+	}
+	if !matched {
+		t.Fatal("应形成一场待确认对局")
+	}
 	if len(publisher.ConfirmReqs) != 1 {
 		t.Errorf("应发布1个确认请求，实际 %d 个", len(publisher.ConfirmReqs))
 	}
 	if len(publisher.MatchResults) != 0 {
 		t.Error("需要确认时不应立即发布匹配结果")
 	}
+}
 
-	for _, id := range []string{"t1", "t2"} {
-		saved, _ := ticketRepo.FindByID(ctx, id)
-		if saved != nil && saved.Status != domainticket.TicketStatusConfirming {
-			t.Errorf("需要确认时票据 %s 状态应为 Confirming", id)
-		}
+func TestUseCase_RunMatchOnce_UsesLockManager(t *testing.T) {
+	lockManager := &mockLockManager{}
+	uc, _, _ := setupUseCase(matchmaking.WithLockManager(lockManager))
+	ctx := context.Background()
+
+	_, err := uc.RunMatchOnce(ctx, config.GameModeCSGO5v5)
+	if err != nil {
+		t.Fatalf("匹配扫描不应失败: %v", err)
+	}
+	if len(lockManager.keys) != 1 {
+		t.Fatalf("应使用分布式锁，实际调用 %d 次", len(lockManager.keys))
 	}
 }
