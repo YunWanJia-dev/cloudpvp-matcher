@@ -15,7 +15,6 @@ import (
 	domainmatch "cloudpvp-matcher/internal/domain/match"
 	domainticket "cloudpvp-matcher/internal/domain/ticket"
 	"cloudpvp-matcher/internal/handler"
-	"cloudpvp-matcher/internal/infra/apollo"
 	"cloudpvp-matcher/internal/infra/cache"
 	localconfig "cloudpvp-matcher/internal/infra/config"
 	"cloudpvp-matcher/internal/infra/mq"
@@ -41,7 +40,7 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("读取本地 Apollo 配置失败: %w", err)
 	}
 
-	apolloClient, err := apollo.NewClient(runCtx, apolloCfg)
+	apolloClient, err := localconfig.NewClient(runCtx, apolloCfg)
 	if err != nil {
 		return fmt.Errorf("Apollo 连接失败: %w", err)
 	}
@@ -111,7 +110,7 @@ func runConsumer(ctx context.Context, requestConsumer handler.Consumer) {
 	}
 }
 
-func runTicketCleanup(ctx context.Context, ticketRepo domainticket.TicketRepository) {
+func runTicketCleanup(ctx context.Context, ticketRepo domainticket.Repository) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -132,7 +131,7 @@ func runTicketCleanup(ctx context.Context, ticketRepo domainticket.TicketReposit
 	}
 }
 
-func redisConfigFromApollo(client *apollo.Client) (cache.Config, error) {
+func redisConfigFromApollo(client *localconfig.Client) (cache.Config, error) {
 	addr := client.GetString("", "redis.addr", "")
 	if addr == "" {
 		return cache.Config{}, errors.New("apollo: redis.addr is required")
@@ -144,7 +143,7 @@ func redisConfigFromApollo(client *apollo.Client) (cache.Config, error) {
 	}, nil
 }
 
-func rabbitMQConfigFromApollo(client *apollo.Client) (mq.Config, error) {
+func rabbitMQConfigFromApollo(client *localconfig.Client) (mq.Config, error) {
 	url := client.GetString("", "rabbitmq.url", "")
 	if url == "" {
 		return mq.Config{}, errors.New("apollo: rabbitmq.url is required")

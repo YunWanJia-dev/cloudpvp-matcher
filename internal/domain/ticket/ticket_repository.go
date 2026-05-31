@@ -6,8 +6,8 @@ import (
 	"cloudpvp-matcher/internal/domain/config"
 )
 
-// TicketRepository 是持久化和查询匹配票据的端口。
-type TicketRepository interface {
+// Repository 是持久化和查询匹配票据的端口。
+type Repository interface {
 	Save(ctx context.Context, ticket *Ticket) error
 	FindByID(ctx context.Context, id string) (*Ticket, error)
 	FindByLobbyID(ctx context.Context, lobbyID string) (*Ticket, error)

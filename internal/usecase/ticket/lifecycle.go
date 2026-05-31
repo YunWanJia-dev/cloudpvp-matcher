@@ -12,11 +12,11 @@ import (
 
 // Lifecycle 管理票据的完整生命周期，包括取消、超时清理等。
 type Lifecycle struct {
-	ticketRepo domainticket.TicketRepository
+	ticketRepo domainticket.Repository
 }
 
 // NewLifecycle 创建票据生命周期管理器。
-func NewLifecycle(ticketRepo domainticket.TicketRepository) *Lifecycle {
+func NewLifecycle(ticketRepo domainticket.Repository) *Lifecycle {
 	return &Lifecycle{ticketRepo: ticketRepo}
 }
 

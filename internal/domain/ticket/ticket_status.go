@@ -3,6 +3,7 @@ package ticket
 // TicketStatus 表示匹配票据的生命周期状态。
 type TicketStatus int
 
+// TODO: 删除以下状态
 const (
 	TicketStatusPending    TicketStatus = iota // 初始状态，等待入队
 	TicketStatusMatching                       // 已进入匹配池，寻找对手

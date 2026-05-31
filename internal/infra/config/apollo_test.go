@@ -1,4 +1,4 @@
-package apollo
+package config
 
 import (
 	"testing"

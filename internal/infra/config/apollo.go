@@ -1,5 +1,5 @@
 // Package apollo 封装 Apollo 配置中心客户端。
-package apollo
+package config
 
 import (
 	"context"

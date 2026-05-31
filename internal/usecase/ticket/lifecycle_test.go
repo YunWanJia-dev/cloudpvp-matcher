@@ -16,7 +16,7 @@ type mockTicketRepository struct {
 	tickets map[string]*domainticket.Ticket
 }
 
-var _ domainticket.TicketRepository = (*mockTicketRepository)(nil)
+var _ domainticket.Repository = (*mockTicketRepository)(nil)
 
 func newMockTicketRepository() *mockTicketRepository {
 	return &mockTicketRepository{tickets: make(map[string]*domainticket.Ticket)}
@@ -91,11 +91,11 @@ func newTestTicket(id, lobbyID string) *domainticket.Ticket {
 		LobbyID:  lobbyID,
 		GameMode: config.GameModeCSGO5v5,
 		Members: []domainticket.PlayerInfo{
-			{PlayerID: "p1", Name: "Player1", Region: "cn-east"},
-			{PlayerID: "p2", Name: "Player2", Region: "cn-east"},
-			{PlayerID: "p3", Name: "Player3", Region: "cn-east"},
-			{PlayerID: "p4", Name: "Player4", Region: "cn-east"},
-			{PlayerID: "p5", Name: "Player5", Region: "cn-east"},
+			{PlayerID: "p1", Name: "Player1"},
+			{PlayerID: "p2", Name: "Player2"},
+			{PlayerID: "p3", Name: "Player3"},
+			{PlayerID: "p4", Name: "Player4"},
+			{PlayerID: "p5", Name: "Player5"},
 		},
 		Status:    domainticket.TicketStatusMatching,
 		CreatedAt: now,

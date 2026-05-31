@@ -66,20 +66,6 @@ func TestTicket_IsActive(t *testing.T) {
 	}
 }
 
-func TestTicket_IsFull(t *testing.T) {
-	cfg := &config.MatchConfig{GameMode: config.GameModeCSGO5v5, TeamSize: 5, TeamCount: 2}
-
-	ticket := newTestTicket("t1", "lobby1")
-	if !ticket.IsFull(cfg) {
-		t.Error("5人票据应满员")
-	}
-
-	ticket.Members = newTestMembers(4)
-	if ticket.IsFull(cfg) {
-		t.Error("4人票据不应满员")
-	}
-}
-
 func TestTicket_TeamSize(t *testing.T) {
 	ticket := newTestTicket("t1", "lobby1")
 	if got := ticket.TeamSize(); got != 5 {

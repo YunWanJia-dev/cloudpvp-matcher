@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"cloudpvp-matcher/internal/infra/apollo"
-
 	"github.com/spf13/viper"
 )
 
@@ -15,7 +13,7 @@ import (
 // 如果传入显式路径，则读取该路径指向的配置文件。
 //
 // 环境变量可以覆盖标量配置值，同时支持 MATCHER_APOLLO_* 和旧版 APOLLO_* 变量名。
-func LoadApollo(path string) (apollo.Config, error) {
+func LoadApollo(path string) (Config, error) {
 	v := viper.New()
 	setDefaults(v)
 	bindEnv(v)
@@ -31,11 +29,11 @@ func LoadApollo(path string) (apollo.Config, error) {
 	if err := v.ReadInConfig(); err != nil {
 		var notFound viper.ConfigFileNotFoundError
 		if path != "" || !errors.As(err, &notFound) {
-			return apollo.Config{}, fmt.Errorf("config: read config file: %w", err)
+			return Config{}, fmt.Errorf("config: read config file: %w", err)
 		}
 	}
 
-	cfg := apollo.Config{
+	cfg := Config{
 		AppID:             v.GetString("apollo.app_id"),
 		Cluster:           v.GetString("apollo.cluster"),
 		Namespace:         v.GetString("apollo.namespace"),
@@ -48,7 +46,7 @@ func LoadApollo(path string) (apollo.Config, error) {
 	}
 
 	if err := validateApollo(cfg); err != nil {
-		return apollo.Config{}, err
+		return Config{}, err
 	}
 	return cfg, nil
 }
@@ -92,7 +90,7 @@ func bindEnvKeys(v *viper.Viper, keys map[string][]string) {
 	}
 }
 
-func validateApollo(cfg apollo.Config) error {
+func validateApollo(cfg Config) error {
 	if cfg.AppID == "" {
 		return errors.New("config: apollo.app_id is required")
 	}

@@ -7,7 +7,8 @@ import (
 	"time"
 
 	"cloudpvp-matcher/internal/domain/config"
-	domainticket "cloudpvp-matcher/internal/domain/ticket"
+	"cloudpvp-matcher/internal/domain/ticket"
+
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -24,7 +25,7 @@ type RedisTicketRepository struct {
 }
 
 // 编译期检查接口实现
-var _ domainticket.TicketRepository = (*RedisTicketRepository)(nil)
+var _ ticket.Repository = (*RedisTicketRepository)(nil)
 
 // NewRedisTicketRepository 创建一个新的 Redis 票据仓储。
 func NewRedisTicketRepository(client *goredis.Client) *RedisTicketRepository {
@@ -32,7 +33,7 @@ func NewRedisTicketRepository(client *goredis.Client) *RedisTicketRepository {
 }
 
 // Save 保存票据，同时维护 lobby 索引和状态索引。
-func (r *RedisTicketRepository) Save(ctx context.Context, ticket *domainticket.Ticket) error {
+func (r *RedisTicketRepository) Save(ctx context.Context, ticket *ticket.Ticket) error {
 	data, err := json.Marshal(ticket)
 	if err != nil {
 		return fmt.Errorf("redis ticket repo: marshal failed: %w", err)
@@ -55,22 +56,22 @@ func (r *RedisTicketRepository) Save(ctx context.Context, ticket *domainticket.T
 }
 
 // FindByID 通过 ID 查找票据。
-func (r *RedisTicketRepository) FindByID(ctx context.Context, id string) (*domainticket.Ticket, error) {
+func (r *RedisTicketRepository) FindByID(ctx context.Context, id string) (*ticket.Ticket, error) {
 	key := ticketKeyPrefix + id
 	data, err := r.client.Get(ctx, key).Result()
 	if err != nil {
 		return nil, fmt.Errorf("redis ticket repo: find by id: %w", err)
 	}
 
-	var ticket domainticket.Ticket
-	if err := json.Unmarshal([]byte(data), &ticket); err != nil {
+	var t ticket.Ticket
+	if err := json.Unmarshal([]byte(data), &t); err != nil {
 		return nil, fmt.Errorf("redis ticket repo: unmarshal ticket: %w", err)
 	}
-	return &ticket, nil
+	return &t, nil
 }
 
 // FindByLobbyID 通过 lobbyID 查找票据（通过反转索引）。
-func (r *RedisTicketRepository) FindByLobbyID(ctx context.Context, lobbyID string) (*domainticket.Ticket, error) {
+func (r *RedisTicketRepository) FindByLobbyID(ctx context.Context, lobbyID string) (*ticket.Ticket, error) {
 	lobbyKey := lobbyIndexPrefix + lobbyID
 	ticketID, err := r.client.Get(ctx, lobbyKey).Result()
 	if err != nil {
@@ -82,28 +83,27 @@ func (r *RedisTicketRepository) FindByLobbyID(ctx context.Context, lobbyID strin
 
 // FindByStatus 查找指定模式下指定状态的票据。
 // 使用 Redis KEYS 命令扫描，适合低并发场景；高并发下应改用 Set 或 Sorted Set。
-func (r *RedisTicketRepository) FindByStatus(ctx context.Context, mode config.GameMode, status domainticket.TicketStatus) ([]*domainticket.Ticket, error) {
+func (r *RedisTicketRepository) FindByStatus(ctx context.Context, mode config.GameMode, status ticket.TicketStatus) ([]*ticket.Ticket, error) {
 	pattern := ticketKeyPrefix + "*"
 	keys, err := r.client.Keys(ctx, pattern).Result()
 	if err != nil {
 		return nil, fmt.Errorf("redis ticket repo: keys scan: %w", err)
 	}
 
-	var tickets []*domainticket.Ticket
+	var tickets []*ticket.Ticket
 	for _, key := range keys {
 		data, err := r.client.Get(ctx, key).Result()
 		if err != nil {
 			continue // 跳过已过期的 key
 		}
 
-		var ticket domainticket.Ticket
-		if err := json.Unmarshal([]byte(data), &ticket); err != nil {
+		var t ticket.Ticket
+		if err := json.Unmarshal([]byte(data), &t); err != nil {
 			continue
 		}
 
-		if ticket.GameMode == mode && ticket.Status == status {
-			ticketCopy := ticket
-			tickets = append(tickets, &ticketCopy)
+		if t.GameMode == mode && t.Status == status {
+			tickets = append(tickets, new(t))
 		}
 	}
 
@@ -111,7 +111,7 @@ func (r *RedisTicketRepository) FindByStatus(ctx context.Context, mode config.Ga
 }
 
 // UpdateStatus 更新票据状态。
-func (r *RedisTicketRepository) UpdateStatus(ctx context.Context, id string, status domainticket.TicketStatus) error {
+func (r *RedisTicketRepository) UpdateStatus(ctx context.Context, id string, status ticket.TicketStatus) error {
 	ticket, err := r.FindByID(ctx, id)
 	if err != nil {
 		return fmt.Errorf("redis ticket repo: update status: find: %w", err)

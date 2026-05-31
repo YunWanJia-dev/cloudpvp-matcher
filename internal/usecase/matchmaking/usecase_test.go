@@ -17,7 +17,7 @@ type mockTicketRepository struct {
 	tickets map[string]*domainticket.Ticket
 }
 
-var _ domainticket.TicketRepository = (*mockTicketRepository)(nil)
+var _ domainticket.Repository = (*mockTicketRepository)(nil)
 
 func newMockTicketRepository() *mockTicketRepository {
 	return &mockTicketRepository{tickets: make(map[string]*domainticket.Ticket)}
