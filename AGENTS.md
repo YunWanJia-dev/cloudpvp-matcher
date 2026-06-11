@@ -83,6 +83,8 @@ Examples:
 ### Code Comments
 
 - Comments must improve readability and maintainability; focus on why, not just what.
+- Go comments for functions, methods, and types must be written in Chinese.
+- Every Go function and method should have a concise Chinese comment above it, including unexported helpers.
 - Add comments for non-obvious constraints, ordering dependencies, tradeoffs, or external API quirks.
 - For long flows, add short comments before major blocks to improve scanability.
 - Avoid comments that only restate obvious code.
@@ -92,7 +94,7 @@ Examples:
 
 - Add GoDoc comments for new exported types, functions, and methods.
 - For complex unexported functions with non-obvious behavior, add concise intent/constraint comments.
-- Prefer English comments for consistency in this repository.
+- Prefer Chinese comments for consistency in this repository.
 
 ## Testing Baseline
 
