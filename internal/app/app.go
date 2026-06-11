@@ -2,24 +2,34 @@
 package app
 
 import (
+	"cloudpvp-matcher/internal/infra/asynclock"
+	"cloudpvp-matcher/internal/infra/cache/repository"
+	"cloudpvp-matcher/internal/infra/mq/publisher"
 	"context"
-	"errors"
+	"encoding/json"
 	"fmt"
+	"log"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"cloudpvp-matcher/internal/domain/config"
+	domainconfig "cloudpvp-matcher/internal/domain/config"
 	domainmatch "cloudpvp-matcher/internal/domain/match"
 	domainticket "cloudpvp-matcher/internal/domain/ticket"
-	"cloudpvp-matcher/internal/handler"
+	"cloudpvp-matcher/internal/handler/dto"
 	"cloudpvp-matcher/internal/infra/cache"
 	localconfig "cloudpvp-matcher/internal/infra/config"
 	"cloudpvp-matcher/internal/infra/mq"
 	"cloudpvp-matcher/internal/usecase/matchmaking"
-	ticketusecase "cloudpvp-matcher/internal/usecase/ticket"
+
+	amqp "github.com/rabbitmq/amqp091-go"
+)
+
+const (
+	defaultMatchRequestQueue = "matchmaking.request.queue"
+	defaultMatchCancelQueue  = "matchmaking.cancel.queue"
 )
 
 // Options 配置匹配服务启动参数。
@@ -27,98 +37,153 @@ type Options struct {
 	ConfigPath string
 }
 
-// Run 初始化匹配服务依赖，并阻塞直到服务关闭。
+// Run 初始化基础设施依赖并阻塞直到服务关闭。
 func Run(ctx context.Context, opts Options) error {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
 	runCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// 本地只读取 Apollo 连接参数，其他运行时配置均从 Apollo 拉取。
-	apolloCfg, err := localconfig.LoadApollo(opts.ConfigPath)
+	configPath := opts.ConfigPath
+	if configPath == "" {
+		configPath = "config.yaml"
+	}
+
+	appConfig, err := localconfig.LoadLocalAppConfig(configPath)
 	if err != nil {
 		return fmt.Errorf("读取本地 Apollo 配置失败: %w", err)
 	}
 
-	apolloClient, err := localconfig.NewClient(runCtx, apolloCfg)
-	if err != nil {
-		return fmt.Errorf("Apollo 连接失败: %w", err)
-	}
+	apolloClient := localconfig.NewApolloClient(appConfig.Apollo)
 	defer apolloClient.Close()
 
-	redisCfg, err := redisConfigFromApollo(apolloClient)
+	redisConfig, err := localconfig.Get[cache.Config](apolloClient)
 	if err != nil {
-		return fmt.Errorf("读取 Apollo Redis 配置失败: %w", err)
+		return fmt.Errorf("读取 Redis 配置失败: %w", err)
 	}
-	redisClient, err := cache.NewRedisClient(runCtx, redisCfg)
+	redisClient, err := cache.NewRedisClient(runCtx, *redisConfig)
 	if err != nil {
-		return fmt.Errorf("Redis 连接失败: %w", err)
+		return fmt.Errorf("连接 Redis 失败: %w", err)
 	}
 	defer redisClient.Close()
 
-	rabbitMQCfg, err := rabbitMQConfigFromApollo(apolloClient)
+	rabbitMQConfig, err := localconfig.Get[mq.RabbitMQConfig](apolloClient)
 	if err != nil {
-		return fmt.Errorf("读取 Apollo RabbitMQ 配置失败: %w", err)
+		return fmt.Errorf("读取 RabbitMQ 配置失败: %w", err)
 	}
-	rabbitMQ, err := mq.NewRabbitMQ(rabbitMQCfg)
-	if err != nil {
-		return fmt.Errorf("RabbitMQ 连接失败: %w", err)
-	}
+	normalizeRabbitMQConfig(rabbitMQConfig)
+
+	rabbitMQ := mq.NewRabbitMQConnection(rabbitMQConfig)
 	defer rabbitMQ.Close()
 
-	if err := mq.DeclareTopology(rabbitMQ); err != nil {
-		return fmt.Errorf("声明 RabbitMQ 拓扑失败: %w", err)
-	}
-
-	ticketRepo := cache.NewRedisTicketRepository(redisClient)
-	lockManager := cache.NewRedisLockManager(redisClient)
-	matchConfigs, err := apolloClient.GetMatchConfigs("")
+	publishChannel, err := rabbitMQ.Channel()
 	if err != nil {
-		return fmt.Errorf("读取 Apollo 匹配配置失败: %w", err)
+		return fmt.Errorf("创建 RabbitMQ 发布 channel 失败: %w", err)
 	}
-	slog.Info("已加载 Apollo 匹配配置", "count", len(matchConfigs))
-	configRepo := localconfig.NewLocalConfigRepository(matchConfigs)
-	publisher := mq.NewPublisher(rabbitMQ)
+	defer publishChannel.Close()
 
+	requestChannel, err := rabbitMQ.Channel()
+	if err != nil {
+		return fmt.Errorf("创建 RabbitMQ 请求消费 channel 失败: %w", err)
+	}
+	defer func(requestChannel *amqp.Channel) {
+		err := requestChannel.Close()
+		if err != nil {
+			log.Fatalln(err.Error())
+		}
+	}(requestChannel)
+
+	cancelChannel, err := rabbitMQ.Channel()
+	if err != nil {
+		return fmt.Errorf("创建 RabbitMQ 取消消费 channel 失败: %w", err)
+	}
+	defer func(cancelChannel *amqp.Channel) {
+		err := cancelChannel.Close()
+		if err != nil {
+			log.Fatalln(err.Error())
+		}
+	}(cancelChannel)
+
+	matchConfigs, err := localconfig.Get[[]*domainconfig.MatchConfig](apolloClient)
+	if err != nil {
+		return fmt.Errorf("读取匹配配置失败: %w", err)
+	}
+
+	ticketRepo := repository.NewRedisTicketRepository(redisClient)
+	lockManager := asynclock.NewRedisLockManager(redisClient)
+	newPublisher := publisher.NewPublisher(publishChannel, rabbitMQConfig)
 	matchmakers := []domainmatch.Matchmaker{
 		domainmatch.NewCSGO5v5Matchmaker(),
-		// 后续新增游戏模式在此注册
 	}
-
 	matchmakingUC := matchmaking.NewUseCase(
 		ticketRepo,
-		configRepo,
-		publisher,
+		*matchConfigs,
+		newPublisher,
 		matchmakers,
 		matchmaking.WithLockManager(lockManager),
 	)
-	matchHandler := handler.NewMatchHandler(matchmakingUC)
-	requestConsumer := mq.NewConsumer(rabbitMQ, mq.RequestQueue, matchHandler.Handle)
 
-	go runConsumer(runCtx, requestConsumer)
-	go runMatchWorker(runCtx, matchmakingUC, configRepo)
-	go runTicketCleanup(runCtx, ticketRepo)
+	go runConsumer(runCtx, requestChannel, rabbitMQConfig.MatchRequestQueue, "匹配请求", func(ctx context.Context, body []byte) error {
+		ticket, err := decodeMatchRequest(body)
+		if err != nil {
+			return err
+		}
+		return matchmakingUC.SubmitTicket(ctx, ticket)
+	})
+	go runConsumer(runCtx, cancelChannel, rabbitMQConfig.MatchCancelQueue, "取消匹配", func(ctx context.Context, body []byte) error {
+		lobbyID, err := decodeMatchCancelRequest(body)
+		if err != nil {
+			return err
+		}
+		return matchmakingUC.CancelTicket(ctx, lobbyID)
+	})
+	go runMatchScanner(runCtx, matchmakingUC)
 
 	slog.Info("cloudpvp-matcher 已启动")
 	<-runCtx.Done()
-
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	slog.Info("正在优雅关闭...")
-	time.Sleep(2 * time.Second) // 等待消费循环退出
-	return nil
+	return ctx.Err()
 }
 
-func runConsumer(ctx context.Context, requestConsumer handler.Consumer) {
-	slog.Info("匹配请求消费者启动", "queue", mq.RequestQueue)
-	if err := requestConsumer.Run(ctx); err != nil && err != context.Canceled {
-		slog.Error("匹配请求消费者异常退出", "error", err)
+// normalizeRabbitMQConfig 为未配置的消费队列填充默认值。
+func normalizeRabbitMQConfig(cfg *mq.RabbitMQConfig) {
+	if cfg.MatchRequestQueue == "" {
+		cfg.MatchRequestQueue = defaultMatchRequestQueue
+	}
+	if cfg.MatchCancelQueue == "" {
+		cfg.MatchCancelQueue = defaultMatchCancelQueue
 	}
 }
 
-func runMatchWorker(ctx context.Context, matchmakingUC *matchmaking.UseCase, configRepo config.ConfigRepository) {
+// runConsumer 启动一个 RabbitMQ 队列消费者并将消息体交给业务处理函数。
+func runConsumer(ctx context.Context, ch *amqp.Channel, queueName, name string, handle func(context.Context, []byte) error) {
+	msgs, err := ch.Consume(queueName, "", false, false, false, false, nil)
+	if err != nil {
+		slog.Error("RabbitMQ 消费者启动失败", "name", name, "queue", queueName, "error", err)
+		return
+	}
+
+	slog.Info("RabbitMQ 消费者已启动", "name", name, "queue", queueName)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg, ok := <-msgs:
+			if !ok {
+				slog.Warn("RabbitMQ 消费通道关闭", "name", name, "queue", queueName)
+				return
+			}
+			if err := handle(ctx, msg.Body); err != nil {
+				slog.Error("RabbitMQ 消息处理失败", "name", name, "queue", queueName, "error", err)
+				_ = msg.Nack(false, true)
+				continue
+			}
+			_ = msg.Ack(false)
+		}
+	}
+}
+
+// runMatchScanner 按固定间隔触发匹配扫描。
+func runMatchScanner(ctx context.Context, usecase *matchmaking.UseCase) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
@@ -127,71 +192,52 @@ func runMatchWorker(ctx context.Context, matchmakingUC *matchmaking.UseCase, con
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			configs, err := configRepo.GetAllMatchConfigs(ctx)
+			result, err := usecase.RunMatchCycle(ctx)
 			if err != nil {
-				slog.Warn("读取匹配配置失败", "error", err)
+				slog.Warn("匹配扫描失败", "error", err)
 				continue
 			}
-			for _, cfg := range configs {
-				for {
-					matched, err := matchmakingUC.RunMatchOnce(ctx, cfg.GameMode)
-					if err != nil {
-						slog.Warn("匹配扫描失败", "mode", cfg.GameMode, "error", err)
-						break
-					}
-					if !matched {
-						break
-					}
-				}
+			if result.MatchedCount > 0 {
+				slog.Info("匹配扫描完成", "matched_count", result.MatchedCount, "scanned_modes", result.ScannedModes)
 			}
 		}
 	}
 }
 
-func runTicketCleanup(ctx context.Context, ticketRepo domainticket.Repository) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	lifecycle := ticketusecase.NewLifecycle(ticketRepo)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			modes := []config.GameMode{config.GameModeCSGO5v5}
-			cleaned, err := lifecycle.CleanupExpiredTickets(ctx, modes, 5*time.Minute)
-			if err != nil {
-				slog.Warn("清理过期票据失败", "error", err)
-			} else if cleaned > 0 {
-				slog.Info("清理过期票据", "count", cleaned)
-			}
-		}
+// decodeMatchRequest 将入站匹配请求消息转换为领域票据。
+func decodeMatchRequest(body []byte) (*domainticket.Ticket, error) {
+	var req dto.MatchRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil, fmt.Errorf("反序列化匹配请求失败: %w", err)
 	}
-}
 
-func redisConfigFromApollo(client *localconfig.Client) (cache.Config, error) {
-	addr := client.GetString("", "redis.addr", "")
-	if addr == "" {
-		return cache.Config{}, errors.New("apollo: redis.addr is required")
+	members := make([]domainticket.PlayerInfo, 0, len(req.Members))
+	for _, member := range req.Members {
+		members = append(members, domainticket.PlayerInfo{
+			PlayerID: member.PlayerID,
+			Name:     member.Name,
+			Region:   member.Region,
+		})
 	}
-	return cache.Config{
-		Addr:     addr,
-		Password: client.GetString("", "redis.password", ""),
-		DB:       client.GetInt("", "redis.db", 0),
+
+	now := time.Now()
+	if !req.CreatedAt.IsZero() {
+		now = req.CreatedAt
+	}
+	return &domainticket.Ticket{
+		LobbyID:   req.LobbyID,
+		GameMode:  domainconfig.GameMode(req.GameMode),
+		Members:   members,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}, nil
 }
 
-func rabbitMQConfigFromApollo(client *localconfig.Client) (mq.Config, error) {
-	url := client.GetString("", "rabbitmq.url", "")
-	if url == "" {
-		return mq.Config{}, errors.New("apollo: rabbitmq.url is required")
+// decodeMatchCancelRequest 从取消匹配请求中提取 lobby ID。
+func decodeMatchCancelRequest(body []byte) (string, error) {
+	var req dto.MatchCancelRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return "", fmt.Errorf("反序列化取消匹配请求失败: %w", err)
 	}
-	exchangeName := client.GetString("", "rabbitmq.exchange_name", "")
-	if exchangeName == "" {
-		return mq.Config{}, errors.New("apollo: rabbitmq.exchange_name is required")
-	}
-	return mq.Config{
-		URL:          url,
-		ExchangeName: exchangeName,
-	}, nil
+	return req.LobbyID, nil
 }

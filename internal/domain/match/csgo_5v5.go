@@ -45,6 +45,7 @@ func (m *CSGO5v5Matchmaker) FindMatch(pool []*ticket.Ticket, cfg *config.MatchCo
 	}
 }
 
+// eligibleTickets 过滤出可参与当前配置匹配的候选票据。
 func eligibleTickets(pool []*ticket.Ticket, cfg *config.MatchConfig) []*ticket.Ticket {
 	candidates := make([]*ticket.Ticket, 0, len(pool))
 	seenLobbyIDs := make(map[string]struct{}, len(pool))
@@ -72,6 +73,7 @@ func eligibleTickets(pool []*ticket.Ticket, cfg *config.MatchConfig) []*ticket.T
 	return candidates
 }
 
+// buildTeams 从候选票据中搜索满足队伍数量和人数要求的队伍组合。
 func buildTeams(candidates []*ticket.Ticket, teamCount, teamSize int) ([]Team, bool) {
 	used := make([]bool, len(candidates))
 	teams := make([]Team, 0, teamCount)
@@ -106,6 +108,7 @@ func buildTeams(candidates []*ticket.Ticket, teamCount, teamSize int) ([]Team, b
 	return teams, true
 }
 
+// teamCombinations 枚举未使用候选票据中可凑满目标人数的组合。
 func teamCombinations(candidates []*ticket.Ticket, used []bool, targetSize int) [][]int {
 	var result [][]int
 	var current []int
@@ -139,6 +142,7 @@ func teamCombinations(candidates []*ticket.Ticket, used []bool, targetSize int) 
 	return result
 }
 
+// ticketsAt 按候选索引取出票据列表。
 func ticketsAt(candidates []*ticket.Ticket, indexes []int) []*ticket.Ticket {
 	tickets := make([]*ticket.Ticket, 0, len(indexes))
 	for _, idx := range indexes {

@@ -1,104 +1,61 @@
-// Package config 加载本地启动配置。
 package config
 
 import (
-	"errors"
-	"fmt"
-	"strings"
-
+	apolloconfig "github.com/apolloconfig/agollo/v5/env/config"
 	"github.com/spf13/viper"
 )
 
-// LoadApollo 从默认的 config.yaml 读取本地 Apollo 启动配置；
-// 如果传入显式路径，则读取该路径指向的配置文件。
-//
-// 环境变量可以覆盖标量配置值，同时支持 MATCHER_APOLLO_* 和旧版 APOLLO_* 变量名。
-func LoadApollo(path string) (Config, error) {
-	v := viper.New()
-	setDefaults(v)
-	bindEnv(v)
+var v *viper.Viper
 
-	if path != "" {
-		v.SetConfigFile(path)
-	} else {
-		v.SetConfigName("config")
-		v.SetConfigType("yaml")
-		v.AddConfigPath(".")
-	}
+// AppConfig 是启动 Apollo 客户端所需的本地引导配置。
+type AppConfig struct {
+	Apollo *apolloconfig.AppConfig
+}
 
+type localAppConfig struct {
+	Apollo struct {
+		AppID             string `mapstructure:"app_id"`
+		Cluster           string `mapstructure:"cluster"`
+		Namespace         string `mapstructure:"namespace"`
+		MetaAddr          string `mapstructure:"meta_addr"`
+		Secret            string `mapstructure:"secret"`
+		IsBackupConfig    bool   `mapstructure:"is_backup_config"`
+		BackupConfigPath  string `mapstructure:"backup_config_path"`
+		MustStart         bool   `mapstructure:"must_start"`
+		SyncServerTimeout int    `mapstructure:"sync_server_timeout"`
+	} `mapstructure:"apollo"`
+}
+
+// init 初始化独立的 Viper 实例，避免污染全局配置。
+func init() {
+	instance := viper.New()
+	instance.AutomaticEnv()
+	v = instance
+}
+
+// LoadLocalAppConfig 读取本地 Apollo 引导配置。
+func LoadLocalAppConfig(path string) (*AppConfig, error) {
+	v.SetConfigFile(path)
 	if err := v.ReadInConfig(); err != nil {
-		var notFound viper.ConfigFileNotFoundError
-		if path != "" || !errors.As(err, &notFound) {
-			return Config{}, fmt.Errorf("config: read config file: %w", err)
-		}
+		return nil, err
 	}
 
-	cfg := Config{
-		AppID:             v.GetString("apollo.app_id"),
-		Cluster:           v.GetString("apollo.cluster"),
-		Namespace:         v.GetString("apollo.namespace"),
-		MetaAddr:          v.GetString("apollo.meta_addr"),
-		Secret:            v.GetString("apollo.secret"),
-		IsBackupConfig:    v.GetBool("apollo.is_backup_config"),
-		BackupConfigPath:  v.GetString("apollo.backup_config_path"),
-		MustStart:         v.GetBool("apollo.must_start"),
-		SyncServerTimeout: v.GetInt("apollo.sync_server_timeout"),
+	var local localAppConfig
+	if err := v.Unmarshal(&local); err != nil {
+		return nil, err
 	}
 
-	if err := validateApollo(cfg); err != nil {
-		return Config{}, err
-	}
-	return cfg, nil
-}
-
-func setDefaults(v *viper.Viper) {
-	v.SetDefault("apollo.app_id", "cloudpvp-matcher")
-	v.SetDefault("apollo.cluster", "default")
-	v.SetDefault("apollo.namespace", "application")
-	v.SetDefault("apollo.meta_addr", "http://localhost:8080")
-	v.SetDefault("apollo.secret", "")
-	v.SetDefault("apollo.is_backup_config", true)
-	v.SetDefault("apollo.backup_config_path", "")
-	v.SetDefault("apollo.must_start", false)
-	v.SetDefault("apollo.sync_server_timeout", 1)
-}
-
-func bindEnv(v *viper.Viper) {
-	v.SetEnvPrefix("MATCHER")
-	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
-	v.AutomaticEnv()
-
-	bindEnvKeys(v, map[string][]string{
-		"apollo.app_id":              {"APOLLO_APP_ID"},
-		"apollo.cluster":             {"APOLLO_CLUSTER"},
-		"apollo.namespace":           {"APOLLO_NAMESPACE"},
-		"apollo.meta_addr":           {"APOLLO_META", "APOLLO_META_ADDR"},
-		"apollo.secret":              {"APOLLO_SECRET"},
-		"apollo.is_backup_config":    {"APOLLO_BACKUP_CONFIG"},
-		"apollo.backup_config_path":  {"APOLLO_BACKUP_CONFIG_PATH"},
-		"apollo.must_start":          {"APOLLO_MUST_START"},
-		"apollo.sync_server_timeout": {"APOLLO_SYNC_SERVER_TIMEOUT"},
-	})
-}
-
-func bindEnvKeys(v *viper.Viper, keys map[string][]string) {
-	for key, aliases := range keys {
-		envNames := []string{"MATCHER_" + strings.ToUpper(strings.ReplaceAll(key, ".", "_"))}
-		envNames = append(envNames, aliases...)
-		args := append([]string{key}, envNames...)
-		_ = v.BindEnv(args...)
-	}
-}
-
-func validateApollo(cfg Config) error {
-	if cfg.AppID == "" {
-		return errors.New("config: apollo.app_id is required")
-	}
-	if cfg.Namespace == "" {
-		return errors.New("config: apollo.namespace is required")
-	}
-	if cfg.MetaAddr == "" {
-		return errors.New("config: apollo.meta_addr is required")
-	}
-	return nil
+	return &AppConfig{
+		Apollo: &apolloconfig.AppConfig{
+			AppID:             local.Apollo.AppID,
+			Cluster:           local.Apollo.Cluster,
+			NamespaceName:     local.Apollo.Namespace,
+			IP:                local.Apollo.MetaAddr,
+			Secret:            local.Apollo.Secret,
+			IsBackupConfig:    local.Apollo.IsBackupConfig,
+			BackupConfigPath:  local.Apollo.BackupConfigPath,
+			MustStart:         local.Apollo.MustStart,
+			SyncServerTimeout: local.Apollo.SyncServerTimeout,
+		},
+	}, nil
 }

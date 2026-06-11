@@ -10,15 +10,16 @@ import (
 
 	"cloudpvp-matcher/internal/domain/config"
 	domainmatch "cloudpvp-matcher/internal/domain/match"
+	domainmatchmaking "cloudpvp-matcher/internal/domain/matchmaking"
 	domainticket "cloudpvp-matcher/internal/domain/ticket"
 )
 
 const matchLockTTL = 5 * time.Second
 
-// Publisher 聚合匹配用例需要发布的出站事件端口。
-type Publisher interface {
-	domainticket.QueueEventPublisher
-	domainmatch.EventPublisher
+// MatchCycleResult 描述一轮匹配扫描的结果。
+type MatchCycleResult struct {
+	MatchedCount int
+	ScannedModes []config.GameMode
 }
 
 // Option 配置匹配用例的可选依赖。
@@ -31,28 +32,39 @@ func WithLockManager(lockManager domainmatch.LockManager) Option {
 	}
 }
 
-// UseCase 是匹配流程的核心用例，负责入队、队列扫描和匹配结果发布。
+// UseCase 负责编排入队、取消和匹配扫描流程。
 type UseCase struct {
-	ticketRepo  domainticket.Repository
-	configRepo  config.ConfigRepository
-	publisher   Publisher
-	lockManager domainmatch.LockManager
-	matchmakers []domainmatch.Matchmaker
+	ticketRepo   domainticket.Repository
+	matchConfigs map[config.GameMode]*config.MatchConfig
+	matchModes   []config.GameMode
+	publisher    domainmatchmaking.Publisher
+	lockManager  domainmatch.LockManager
+	matchmakers  []domainmatch.Matchmaker
 }
 
 // NewUseCase 创建匹配用例实例。
 func NewUseCase(
 	ticketRepo domainticket.Repository,
-	configRepo config.ConfigRepository,
-	publisher Publisher,
+	matchConfigs []*config.MatchConfig,
+	publisher domainmatchmaking.Publisher,
 	matchmakers []domainmatch.Matchmaker,
 	options ...Option,
 ) *UseCase {
 	uc := &UseCase{
-		ticketRepo:  ticketRepo,
-		configRepo:  configRepo,
-		publisher:   publisher,
-		matchmakers: matchmakers,
+		ticketRepo:   ticketRepo,
+		matchConfigs: make(map[config.GameMode]*config.MatchConfig, len(matchConfigs)),
+		matchModes:   make([]config.GameMode, 0, len(matchConfigs)),
+		publisher:    publisher,
+		matchmakers:  matchmakers,
+	}
+	for _, cfg := range matchConfigs {
+		if cfg == nil {
+			continue
+		}
+		if _, exists := uc.matchConfigs[cfg.GameMode]; !exists {
+			uc.matchModes = append(uc.matchModes, cfg.GameMode)
+		}
+		uc.matchConfigs[cfg.GameMode] = cfg
 	}
 	for _, option := range options {
 		option(uc)
@@ -60,8 +72,8 @@ func NewUseCase(
 	return uc
 }
 
-// Enqueue 校验 lobby 后将其持久化到匹配队列，并发布入队成功事件。
-func (uc *UseCase) Enqueue(ctx context.Context, ticket *domainticket.Ticket) error {
+// SubmitTicket 将 lobby 票据提交到匹配队列。
+func (uc *UseCase) SubmitTicket(ctx context.Context, ticket *domainticket.Ticket) error {
 	cfg, err := uc.validateQueueTicket(ctx, ticket)
 	if err != nil {
 		return err
@@ -74,11 +86,10 @@ func (uc *UseCase) Enqueue(ctx context.Context, ticket *domainticket.Ticket) err
 		return err
 	}
 
-	if err := uc.ticketRepo.Save(ctx, ticket); err != nil {
+	if err := uc.ticketRepo.SaveTicket(ctx, ticket); err != nil {
 		return fmt.Errorf("保存票据入队失败 lobby_id=%s: %w", ticket.LobbyID, err)
 	}
 
-	// 入队事件必须在持久化成功后发布，消费者重试时依赖 lobby_id 覆盖保存保证幂等。
 	if err := uc.publisher.PublishTicketQueued(ctx, ticket); err != nil {
 		return fmt.Errorf("发布入队成功事件失败 lobby_id=%s: %w", ticket.LobbyID, err)
 	}
@@ -87,28 +98,60 @@ func (uc *UseCase) Enqueue(ctx context.Context, ticket *domainticket.Ticket) err
 	return nil
 }
 
-// RunMatchOnce 在指定模式队列中尝试形成一场对局。
-func (uc *UseCase) RunMatchOnce(ctx context.Context, mode config.GameMode) (bool, error) {
-	cfg, err := uc.getMatchConfig(ctx, mode)
-	if err != nil {
-		return false, err
+// CancelTicket 按 lobby ID 幂等取消匹配队列中的票据。
+func (uc *UseCase) CancelTicket(ctx context.Context, lobbyID string) error {
+	lobbyID = strings.TrimSpace(lobbyID)
+	if lobbyID == "" {
+		return fmt.Errorf("lobby_id 不能为空")
+	}
+	if err := uc.ticketRepo.Remove(ctx, lobbyID); err != nil {
+		return fmt.Errorf("取消匹配失败 lobby_id=%s: %w", lobbyID, err)
+	}
+	slog.Info("票据取消匹配", "lobby_id", lobbyID)
+	return nil
+}
+
+// RunMatchCycle 执行一轮所有已配置模式的匹配扫描。
+func (uc *UseCase) RunMatchCycle(ctx context.Context) (MatchCycleResult, error) {
+	var result MatchCycleResult
+
+	for _, mode := range uc.matchModes {
+		cfg, err := uc.getMatchConfig(mode)
+		if err != nil {
+			return result, err
+		}
+		matchmaker, err := uc.getMatchmaker(mode)
+		if err != nil {
+			return result, fmt.Errorf("获取匹配器失败: %w", err)
+		}
+
+		result.ScannedModes = append(result.ScannedModes, mode)
+		for {
+			matched, err := uc.runMatchAttempt(ctx, cfg, matchmaker)
+			if err != nil {
+				return result, err
+			}
+			if !matched {
+				break
+			}
+			result.MatchedCount++
+		}
 	}
 
-	matchmaker, err := uc.getMatchmaker(mode)
-	if err != nil {
-		return false, fmt.Errorf("获取匹配器失败: %w", err)
-	}
+	return result, nil
+}
 
+// runMatchAttempt 在可选分布式锁保护下尝试完成一次匹配。
+func (uc *UseCase) runMatchAttempt(ctx context.Context, cfg *config.MatchConfig, matchmaker domainmatch.Matchmaker) (bool, error) {
 	if uc.lockManager == nil {
-		matched, err := uc.runMatchOnceLocked(ctx, cfg, matchmaker)
-		return matched, err
+		return uc.runMatchAttemptLocked(ctx, cfg, matchmaker)
 	}
 
 	var matched bool
-	lockKey := fmt.Sprintf("matcher:lock:%s", mode)
-	err = uc.lockManager.WithLock(ctx, lockKey, matchLockTTL, func(ctx context.Context) error {
+	lockKey := fmt.Sprintf("matcher:lock:%s", cfg.GameMode)
+	err := uc.lockManager.WithLock(ctx, lockKey, matchLockTTL, func(ctx context.Context) error {
 		var matchErr error
-		matched, matchErr = uc.runMatchOnceLocked(ctx, cfg, matchmaker)
+		matched, matchErr = uc.runMatchAttemptLocked(ctx, cfg, matchmaker)
 		return matchErr
 	})
 	if err != nil {
@@ -117,7 +160,8 @@ func (uc *UseCase) RunMatchOnce(ctx context.Context, mode config.GameMode) (bool
 	return matched, nil
 }
 
-func (uc *UseCase) runMatchOnceLocked(ctx context.Context, cfg *config.MatchConfig, matchmaker domainmatch.Matchmaker) (bool, error) {
+// runMatchAttemptLocked 在已获得互斥条件时读取池子并尝试生成一场对局。
+func (uc *UseCase) runMatchAttemptLocked(ctx context.Context, cfg *config.MatchConfig, matchmaker domainmatch.Matchmaker) (bool, error) {
 	pool, err := uc.ticketRepo.ListByGameMode(ctx, cfg.GameMode)
 	if err != nil {
 		return false, fmt.Errorf("查询匹配池失败 mode=%s: %w", cfg.GameMode, err)
@@ -148,9 +192,10 @@ func (uc *UseCase) runMatchOnceLocked(ctx context.Context, cfg *config.MatchConf
 	return true, nil
 }
 
+// publishMatch 根据匹配配置发布确认请求或直接发布匹配结果。
 func (uc *UseCase) publishMatch(ctx context.Context, match *domainmatch.Match, cfg *config.MatchConfig) error {
 	if cfg.NeedConfirm {
-		if err := uc.publisher.PublishConfirmRequest(ctx, match); err != nil {
+		if err := uc.publisher.PublishConfirmRequest(ctx, match, cfg.ConfirmTimeout); err != nil {
 			return fmt.Errorf("发布确认请求失败 match_id=%s: %w", match.ID, err)
 		}
 		return nil
@@ -166,6 +211,7 @@ func (uc *UseCase) publishMatch(ctx context.Context, match *domainmatch.Match, c
 	return nil
 }
 
+// removeMatchedTickets 从匹配池中移除已经组成对局的票据。
 func (uc *UseCase) removeMatchedTickets(ctx context.Context, match *domainmatch.Match) error {
 	for _, ticket := range match.AllTickets() {
 		if err := uc.ticketRepo.Remove(ctx, ticket.LobbyID); err != nil {
@@ -175,6 +221,7 @@ func (uc *UseCase) removeMatchedTickets(ctx context.Context, match *domainmatch.
 	return nil
 }
 
+// validateQueueTicket 校验入队票据并返回对应模式配置。
 func (uc *UseCase) validateQueueTicket(ctx context.Context, ticket *domainticket.Ticket) (*config.MatchConfig, error) {
 	if ticket == nil {
 		return nil, fmt.Errorf("票据不能为空")
@@ -186,7 +233,7 @@ func (uc *UseCase) validateQueueTicket(ctx context.Context, ticket *domainticket
 		return nil, fmt.Errorf("game_mode 不能为空")
 	}
 
-	cfg, err := uc.getMatchConfig(ctx, ticket.GameMode)
+	cfg, err := uc.getMatchConfig(ticket.GameMode)
 	if err != nil {
 		return nil, err
 	}
@@ -196,20 +243,22 @@ func (uc *UseCase) validateQueueTicket(ctx context.Context, ticket *domainticket
 	return cfg, nil
 }
 
-func (uc *UseCase) getMatchConfig(ctx context.Context, mode config.GameMode) (*config.MatchConfig, error) {
-	cfg, err := uc.configRepo.GetMatchConfig(ctx, mode)
-	if err != nil {
-		return nil, fmt.Errorf("获取匹配配置失败 mode=%s: %w", mode, err)
-	}
-	if cfg == nil {
+// getMatchConfig 从启动时注入的配置快照中读取指定模式配置。
+func (uc *UseCase) getMatchConfig(mode config.GameMode) (*config.MatchConfig, error) {
+	cfg, ok := uc.matchConfigs[mode]
+	if !ok || cfg == nil {
 		return nil, fmt.Errorf("未找到匹配配置 mode=%s", mode)
 	}
 	if cfg.TeamSize <= 0 || cfg.TeamCount <= 0 {
 		return nil, fmt.Errorf("匹配配置非法 mode=%s team_size=%d team_count=%d", mode, cfg.TeamSize, cfg.TeamCount)
 	}
+	if cfg.NeedConfirm && cfg.ConfirmTimeout <= 0 {
+		return nil, fmt.Errorf("匹配配置非法 mode=%s confirm_timeout=%s", mode, cfg.ConfirmTimeout)
+	}
 	return cfg, nil
 }
 
+// validateMembers 校验票据成员数量和玩家 ID 唯一性。
 func validateMembers(ticket *domainticket.Ticket, maxTeamSize int) error {
 	memberCount := ticket.TeamSize()
 	if memberCount == 0 {
@@ -233,6 +282,7 @@ func validateMembers(ticket *domainticket.Ticket, maxTeamSize int) error {
 	return nil
 }
 
+// prepareQueuedTicket 处理重复入队时的创建时间保留和更新时间刷新。
 func (uc *UseCase) prepareQueuedTicket(ctx context.Context, ticket *domainticket.Ticket) error {
 	existing, err := uc.ticketRepo.FindByLobbyID(ctx, ticket.LobbyID)
 	if err != nil {
@@ -249,6 +299,7 @@ func (uc *UseCase) prepareQueuedTicket(ctx context.Context, ticket *domainticket
 	return nil
 }
 
+// getMatchmaker 查找支持指定游戏模式的领域匹配器。
 func (uc *UseCase) getMatchmaker(mode config.GameMode) (domainmatch.Matchmaker, error) {
 	for _, matchmaker := range uc.matchmakers {
 		if matchmaker.Supports(mode) {
@@ -258,6 +309,7 @@ func (uc *UseCase) getMatchmaker(mode config.GameMode) (domainmatch.Matchmaker, 
 	return nil, fmt.Errorf("未找到匹配器 mode=%s", mode)
 }
 
+// generateMatchID 生成当前进程内足够区分的匹配 ID。
 func (uc *UseCase) generateMatchID(now time.Time) string {
 	return fmt.Sprintf("match-%d-%d", now.UnixMilli(), now.Nanosecond()%10000)
 }

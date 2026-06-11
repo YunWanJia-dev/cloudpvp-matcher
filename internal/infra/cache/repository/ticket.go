@@ -1,4 +1,4 @@
-package cache
+package repository
 
 import (
 	"context"
@@ -20,19 +20,11 @@ const (
 )
 
 // RedisTicketRepository 通过 Redis 实现 TicketRepository 端口。
-type RedisTicketRepository struct {
-	client *goredis.Client
-}
 
-var _ ticket.Repository = (*RedisTicketRepository)(nil)
+var _ ticket.Repository = (*RedisRepository)(nil)
 
-// NewRedisTicketRepository 创建一个新的 Redis 票据仓储。
-func NewRedisTicketRepository(client *goredis.Client) *RedisTicketRepository {
-	return &RedisTicketRepository{client: client}
-}
-
-// Save 保存队列票据，并按游戏模式维护待匹配索引。
-func (r *RedisTicketRepository) Save(ctx context.Context, queuedTicket *ticket.Ticket) error {
+// SaveTicket 保存队列票据，并按游戏模式维护待匹配索引。
+func (r *RedisRepository) SaveTicket(ctx context.Context, queuedTicket *ticket.Ticket) error {
 	if queuedTicket == nil {
 		return fmt.Errorf("redis ticket repo: ticket is nil")
 	}
@@ -65,7 +57,7 @@ func (r *RedisTicketRepository) Save(ctx context.Context, queuedTicket *ticket.T
 }
 
 // FindByLobbyID 通过唯一 lobby ID 查找票据。
-func (r *RedisTicketRepository) FindByLobbyID(ctx context.Context, lobbyID string) (*ticket.Ticket, error) {
+func (r *RedisRepository) FindByLobbyID(ctx context.Context, lobbyID string) (*ticket.Ticket, error) {
 	if lobbyID == "" {
 		return nil, nil
 	}
@@ -86,7 +78,7 @@ func (r *RedisTicketRepository) FindByLobbyID(ctx context.Context, lobbyID strin
 }
 
 // ListByGameMode 返回指定模式下仍在队列中的票据。
-func (r *RedisTicketRepository) ListByGameMode(ctx context.Context, mode config.GameMode) ([]*ticket.Ticket, error) {
+func (r *RedisRepository) ListByGameMode(ctx context.Context, mode config.GameMode) ([]*ticket.Ticket, error) {
 	lobbyIDs, err := r.client.SMembers(ctx, modeIndexKey(mode)).Result()
 	if errors.Is(err, goredis.Nil) {
 		return nil, nil
@@ -113,7 +105,7 @@ func (r *RedisTicketRepository) ListByGameMode(ctx context.Context, mode config.
 }
 
 // Remove 从 Redis 中删除票据及其模式索引。
-func (r *RedisTicketRepository) Remove(ctx context.Context, lobbyID string) error {
+func (r *RedisRepository) Remove(ctx context.Context, lobbyID string) error {
 	queuedTicket, err := r.FindByLobbyID(ctx, lobbyID)
 	if err != nil {
 		return fmt.Errorf("redis ticket repo: remove ticket lookup: %w", err)
@@ -129,10 +121,12 @@ func (r *RedisTicketRepository) Remove(ctx context.Context, lobbyID string) erro
 	return nil
 }
 
+// ticketKey 生成单个 lobby 票据的 Redis key。
 func ticketKey(lobbyID string) string {
 	return ticketKeyPrefix + lobbyID
 }
 
+// modeIndexKey 生成游戏模式到 lobby 索引集合的 Redis key。
 func modeIndexKey(mode config.GameMode) string {
 	return modeIndexPrefix + string(mode)
 }

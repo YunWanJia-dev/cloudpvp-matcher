@@ -1,57 +1,24 @@
-// Package mq 提供 RabbitMQ 基础设施实现。
 package mq
 
 import (
-	"fmt"
+	"log"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-// Config RabbitMQ 连接配置。
-type Config struct {
-	URL          string `yaml:"url"`
-	ExchangeName string `yaml:"exchange_name"`
+// RabbitMQConfig 是 Apollo 下发的 RabbitMQ 连接和消费队列配置。
+type RabbitMQConfig struct {
+	URL               string `json:"url" mapstructure:"url"`
+	ExchangeName      string `json:"exchange_name" mapstructure:"exchange_name"`
+	MatchRequestQueue string `json:"match_request_queue" mapstructure:"match_request_queue"`
+	MatchCancelQueue  string `json:"match_cancel_queue" mapstructure:"match_cancel_queue"`
 }
 
-// RabbitMQ 管理 AMQP 连接和通道。
-type RabbitMQ struct {
-	conn *amqp.Connection
-	ch   *amqp.Channel
-	cfg  Config
-}
-
-// NewRabbitMQ 建立与 RabbitMQ 的连接。
-func NewRabbitMQ(cfg Config) (*RabbitMQ, error) {
-	conn, err := amqp.Dial(cfg.URL)
+// NewRabbitMQConnection 建立 RabbitMQ 连接。
+func NewRabbitMQConnection(config *RabbitMQConfig) *amqp.Connection {
+	instance, err := amqp.Dial(config.URL)
 	if err != nil {
-		return nil, fmt.Errorf("rabbitmq: dial failed: %w", err)
+		log.Panicf("failed to connect to RabbitMQ: %s", err)
 	}
-
-	ch, err := conn.Channel()
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("rabbitmq: create channel failed: %w", err)
-	}
-
-	return &RabbitMQ{conn: conn, ch: ch, cfg: cfg}, nil
-}
-
-// Channel 返回当前的 AMQP 通道。
-func (r *RabbitMQ) Channel() *amqp.Channel {
-	return r.ch
-}
-
-// ExchangeName 返回配置的交换器名称。
-func (r *RabbitMQ) ExchangeName() string {
-	return r.cfg.ExchangeName
-}
-
-// Close 关闭通道和连接。
-func (r *RabbitMQ) Close() {
-	if r.ch != nil {
-		r.ch.Close()
-	}
-	if r.conn != nil {
-		r.conn.Close()
-	}
+	return instance
 }
