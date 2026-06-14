@@ -12,6 +12,8 @@ import (
 // 它将队列中的 lobby 拼成两支 5 人队伍。
 type CSGO5v5Matchmaker struct{}
 
+var _ Matchmaker = (*CSGO5v5Matchmaker)(nil)
+
 // NewCSGO5v5Matchmaker 创建一个新的 CS:GO 5v5 匹配器。
 func NewCSGO5v5Matchmaker() *CSGO5v5Matchmaker {
 	return &CSGO5v5Matchmaker{}
