@@ -26,8 +26,6 @@ func newTestMembers(prefix string, n int) []ticket.PlayerInfo {
 	for i := 0; i < n; i++ {
 		members[i] = ticket.PlayerInfo{
 			PlayerID: fmt.Sprintf("%s-player-%d", prefix, i+1),
-			Name:     fmt.Sprintf("Player %d", i+1),
-			Region:   "cn-east",
 		}
 	}
 	return members

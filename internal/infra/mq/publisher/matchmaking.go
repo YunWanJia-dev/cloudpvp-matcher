@@ -109,8 +109,6 @@ func toMemberInfos(players []domainticket.PlayerInfo) []dto.MemberInfo {
 	for _, player := range players {
 		members = append(members, dto.MemberInfo{
 			PlayerID: player.PlayerID,
-			Name:     player.Name,
-			Region:   player.Region,
 		})
 	}
 	return members

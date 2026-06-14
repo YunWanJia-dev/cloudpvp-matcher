@@ -215,8 +215,6 @@ func decodeMatchRequest(body []byte) (*domainticket.Ticket, error) {
 	for _, member := range req.Members {
 		members = append(members, domainticket.PlayerInfo{
 			PlayerID: member.PlayerID,
-			Name:     member.Name,
-			Region:   member.Region,
 		})
 	}
 

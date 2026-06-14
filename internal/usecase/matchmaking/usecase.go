@@ -14,8 +14,6 @@ import (
 	domainticket "cloudpvp-matcher/internal/domain/ticket"
 )
 
-const matchLockTTL = 5 * time.Second
-
 // MatchCycleResult 描述一轮匹配扫描的结果。
 type MatchCycleResult struct {
 	MatchedCount int
@@ -143,25 +141,6 @@ func (uc *UseCase) RunMatchCycle(ctx context.Context) (MatchCycleResult, error) 
 
 // runMatchAttempt 在可选分布式锁保护下尝试完成一次匹配。
 func (uc *UseCase) runMatchAttempt(ctx context.Context, cfg *config.MatchConfig, matchmaker domainmatch.Matchmaker) (bool, error) {
-	if uc.lockManager == nil {
-		return uc.runMatchAttemptLocked(ctx, cfg, matchmaker)
-	}
-
-	var matched bool
-	lockKey := fmt.Sprintf("matcher:lock:%s", cfg.GameMode)
-	err := uc.lockManager.WithLock(ctx, lockKey, matchLockTTL, func(ctx context.Context) error {
-		var matchErr error
-		matched, matchErr = uc.runMatchAttemptLocked(ctx, cfg, matchmaker)
-		return matchErr
-	})
-	if err != nil {
-		return false, err
-	}
-	return matched, nil
-}
-
-// runMatchAttemptLocked 在已获得互斥条件时读取池子并尝试生成一场对局。
-func (uc *UseCase) runMatchAttemptLocked(ctx context.Context, cfg *config.MatchConfig, matchmaker domainmatch.Matchmaker) (bool, error) {
 	pool, err := uc.ticketRepo.ListByGameMode(ctx, cfg.GameMode)
 	if err != nil {
 		return false, fmt.Errorf("查询匹配池失败 mode=%s: %w", cfg.GameMode, err)
@@ -172,15 +151,61 @@ func (uc *UseCase) runMatchAttemptLocked(ctx context.Context, cfg *config.MatchC
 		return false, nil
 	}
 
+	if uc.lockManager == nil {
+		if err := uc.completeMatch(ctx, match, cfg); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	var matched bool
+	lobbyIDs := matchLobbyIDs(match)
+	err = uc.lockManager.WithLobbyLock(ctx, lobbyIDs, func(ctx context.Context) error {
+		lockedMatch, err := uc.reloadLockedMatch(ctx, lobbyIDs, cfg, matchmaker)
+		if err != nil {
+			return err
+		}
+		if lockedMatch == nil {
+			return nil
+		}
+		if err := uc.completeMatch(ctx, lockedMatch, cfg); err != nil {
+			return err
+		}
+		matched = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return matched, nil
+}
+
+// reloadLockedMatch 在持有 lobby 锁后重新读取票据并确认匹配仍然成立。
+func (uc *UseCase) reloadLockedMatch(ctx context.Context, lobbyIDs []string, cfg *config.MatchConfig, matchmaker domainmatch.Matchmaker) (*domainmatch.Match, error) {
+	pool := make([]*domainticket.Ticket, 0, len(lobbyIDs))
+	for _, lobbyID := range lobbyIDs {
+		ticket, err := uc.ticketRepo.FindByLobbyID(ctx, lobbyID)
+		if err != nil {
+			return nil, fmt.Errorf("查询锁定票据失败 lobby_id=%s: %w", lobbyID, err)
+		}
+		if ticket != nil {
+			pool = append(pool, ticket)
+		}
+	}
+	return matchmaker.FindMatch(pool, cfg), nil
+}
+
+// completeMatch 完成匹配发布和已匹配票据移除。
+func (uc *UseCase) completeMatch(ctx context.Context, match *domainmatch.Match, cfg *config.MatchConfig) error {
 	now := time.Now()
 	match.ID = uc.generateMatchID(now)
 	match.UpdatedAt = now
 
 	if err := uc.publishMatch(ctx, match, cfg); err != nil {
-		return false, err
+		return err
 	}
 	if err := uc.removeMatchedTickets(ctx, match); err != nil {
-		return false, err
+		return err
 	}
 
 	slog.Info("匹配成功",
@@ -189,7 +214,22 @@ func (uc *UseCase) runMatchAttemptLocked(ctx context.Context, cfg *config.MatchC
 		"team_count", len(match.Teams),
 		"ticket_count", len(match.AllTickets()),
 	)
-	return true, nil
+	return nil
+}
+
+// matchLobbyIDs 返回候选匹配中涉及的全部 lobby ID。
+func matchLobbyIDs(match *domainmatch.Match) []string {
+	if match == nil {
+		return nil
+	}
+	tickets := match.AllTickets()
+	lobbyIDs := make([]string, 0, len(tickets))
+	for _, ticket := range tickets {
+		if ticket != nil {
+			lobbyIDs = append(lobbyIDs, ticket.LobbyID)
+		}
+	}
+	return lobbyIDs
 }
 
 // publishMatch 根据匹配配置发布确认请求或直接发布匹配结果。
