@@ -8,10 +8,8 @@ import (
 
 // RabbitMQConfig 是 Apollo 下发的 RabbitMQ 连接和消费队列配置。
 type RabbitMQConfig struct {
-	URL               string `json:"url" mapstructure:"url"`
-	ExchangeName      string `json:"exchange_name" mapstructure:"exchange_name"`
-	MatchRequestQueue string `json:"match_request_queue" mapstructure:"match_request_queue"`
-	MatchCancelQueue  string `json:"match_cancel_queue" mapstructure:"match_cancel_queue"`
+	URL          string `json:"url" mapstructure:"url"`
+	ExchangeName string `json:"exchange_name" mapstructure:"exchange_name"`
 }
 
 // NewRabbitMQConnection 建立 RabbitMQ 连接。

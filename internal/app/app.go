@@ -2,8 +2,6 @@
 package app
 
 import (
-	"cloudpvp-matcher/internal/infra/asynclock"
-	"cloudpvp-matcher/internal/infra/cache/repository"
 	"cloudpvp-matcher/internal/infra/mq/publisher"
 	"context"
 	"encoding/json"
@@ -15,21 +13,15 @@ import (
 	"syscall"
 	"time"
 
-	domainconfig "cloudpvp-matcher/internal/domain/config"
+	domainlobby "cloudpvp-matcher/internal/domain/lobby"
 	domainmatch "cloudpvp-matcher/internal/domain/match"
-	domainticket "cloudpvp-matcher/internal/domain/ticket"
-	"cloudpvp-matcher/internal/handler/dto"
 	"cloudpvp-matcher/internal/infra/cache"
+	"cloudpvp-matcher/internal/infra/cache/repository"
 	localconfig "cloudpvp-matcher/internal/infra/config"
 	"cloudpvp-matcher/internal/infra/mq"
 	"cloudpvp-matcher/internal/usecase/matchmaking"
 
 	amqp "github.com/rabbitmq/amqp091-go"
-)
-
-const (
-	defaultMatchRequestQueue = "matchmaking.request.queue"
-	defaultMatchCancelQueue  = "matchmaking.cancel.queue"
 )
 
 // Options 配置匹配服务启动参数。
@@ -71,7 +63,6 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("读取 RabbitMQ 配置失败: %w", err)
 	}
-	normalizeRabbitMQConfig(rabbitMQConfig)
 
 	rabbitMQ := mq.NewRabbitMQConnection(rabbitMQConfig)
 	defer rabbitMQ.Close()
@@ -104,54 +95,37 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}(cancelChannel)
 
-	matchConfigs, err := localconfig.Get[[]*domainconfig.MatchConfig](apolloClient)
-	if err != nil {
-		return fmt.Errorf("读取匹配配置失败: %w", err)
-	}
-
-	ticketRepo := repository.NewRedisTicketRepository(redisClient)
-	lockManager := asynclock.NewRedisLockManager(redisClient)
 	newPublisher := publisher.NewPublisher(publishChannel, rabbitMQConfig)
-	matchmakers := []domainmatch.Matchmaker{
-		domainmatch.NewCSGO5v5Matchmaker(),
-	}
-	matchmakingUC := matchmaking.NewUseCase(
-		ticketRepo,
-		*matchConfigs,
-		newPublisher,
-		matchmakers,
-		matchmaking.WithLockManager(lockManager),
-	)
+	lobbyRepo := repository.NewRedisLobbyRepository(redisClient)
 
-	go runConsumer(runCtx, requestChannel, rabbitMQConfig.MatchRequestQueue, "匹配请求", func(ctx context.Context, body []byte) error {
-		ticket, err := decodeMatchRequest(body)
+	matchmakingUC := matchmaking.NewUseCase(lobbyRepo, newPublisher)
+
+	matchmakers := []domainmatch.Matchmaker{}
+
+	for _, matchmaker := range matchmakers {
+		if err := matchmakingUC.AddMatchmaker(matchmaker); err != nil {
+			return err
+		}
+	}
+
+	go runConsumer(runCtx, requestChannel, "matchmaking.request.queue", "匹配请求", func(ctx context.Context, body []byte) error {
+		lobby, err := decodeLobby(body)
 		if err != nil {
 			return err
 		}
-		return matchmakingUC.SubmitTicket(ctx, ticket)
+		return matchmakingUC.SubmitLobby(ctx, lobby)
 	})
-	go runConsumer(runCtx, cancelChannel, rabbitMQConfig.MatchCancelQueue, "取消匹配", func(ctx context.Context, body []byte) error {
-		lobbyID, err := decodeMatchCancelRequest(body)
+	go runConsumer(runCtx, cancelChannel, "matchmaking.cancel.queue", "取消匹配", func(ctx context.Context, body []byte) error {
+		lobby, err := decodeLobby(body)
 		if err != nil {
 			return err
 		}
-		return matchmakingUC.CancelTicket(ctx, lobbyID)
+		return matchmakingUC.CancelLobby(ctx, lobby.LobbyID)
 	})
-	go runMatchScanner(runCtx, matchmakingUC)
 
 	slog.Info("cloudpvp-matcher 已启动")
 	<-runCtx.Done()
 	return ctx.Err()
-}
-
-// normalizeRabbitMQConfig 为未配置的消费队列填充默认值。
-func normalizeRabbitMQConfig(cfg *mq.RabbitMQConfig) {
-	if cfg.MatchRequestQueue == "" {
-		cfg.MatchRequestQueue = defaultMatchRequestQueue
-	}
-	if cfg.MatchCancelQueue == "" {
-		cfg.MatchCancelQueue = defaultMatchCancelQueue
-	}
 }
 
 // runConsumer 启动一个 RabbitMQ 队列消费者并将消息体交给业务处理函数。
@@ -182,60 +156,18 @@ func runConsumer(ctx context.Context, ch *amqp.Channel, queueName, name string, 
 	}
 }
 
-// runMatchScanner 按固定间隔触发匹配扫描。
-func runMatchScanner(ctx context.Context, usecase *matchmaking.UseCase) {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			result, err := usecase.RunMatchCycle(ctx)
-			if err != nil {
-				slog.Warn("匹配扫描失败", "error", err)
-				continue
-			}
-			if result.MatchedCount > 0 {
-				slog.Info("匹配扫描完成", "matched_count", result.MatchedCount, "scanned_modes", result.ScannedModes)
-			}
-		}
-	}
-}
-
-// decodeMatchRequest 将入站匹配请求消息转换为领域票据。
-func decodeMatchRequest(body []byte) (*domainticket.Ticket, error) {
-	var req dto.MatchRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		return nil, fmt.Errorf("反序列化匹配请求失败: %w", err)
-	}
-
-	members := make([]domainticket.PlayerInfo, 0, len(req.Members))
-	for _, member := range req.Members {
-		members = append(members, domainticket.PlayerInfo{
-			PlayerID: member.PlayerID,
-		})
+// decodeLobby 将入站 lobby 消息转换为领域 lobby。
+func decodeLobby(body []byte) (*domainlobby.Lobby, error) {
+	var lobby domainlobby.Lobby
+	if err := json.Unmarshal(body, &lobby); err != nil {
+		return nil, fmt.Errorf("反序列化 lobby 失败: %w", err)
 	}
 
 	now := time.Now()
-	if !req.CreatedAt.IsZero() {
-		now = req.CreatedAt
+	if !lobby.CreatedAt.IsZero() {
+		now = lobby.CreatedAt
 	}
-	return &domainticket.Ticket{
-		LobbyID:   req.LobbyID,
-		GameMode:  domainconfig.GameMode(req.GameMode),
-		Members:   members,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}, nil
-}
-
-// decodeMatchCancelRequest 从取消匹配请求中提取 lobby ID。
-func decodeMatchCancelRequest(body []byte) (string, error) {
-	var req dto.MatchCancelRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		return "", fmt.Errorf("反序列化取消匹配请求失败: %w", err)
-	}
-	return req.LobbyID, nil
+	lobby.CreatedAt = now
+	lobby.UpdatedAt = now
+	return &lobby, nil
 }

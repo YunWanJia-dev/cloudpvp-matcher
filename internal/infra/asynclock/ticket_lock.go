@@ -1,7 +1,7 @@
 package asynclock
 
 import (
-	domainmatch "cloudpvp-matcher/internal/domain/match"
+	domainmatch "cloudpvp-matcher/internal/domain/lobby"
 	"context"
 	"fmt"
 	"time"

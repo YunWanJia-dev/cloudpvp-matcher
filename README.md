@@ -1,6 +1,6 @@
 # cloudpvp-matcher
 
-`cloudpvp-matcher` 是 cloudpvp 对战平台的匹配服务。服务从 RabbitMQ 接收匹配请求，先将合法 lobby 持久化到匹配队列并发布入队成功事件，再由后台匹配扫描器基于游戏模式配置和领域匹配器生成对局。
+`cloudpvp-matcher` 是 cloudpvp 对战平台的匹配服务。服务从 RabbitMQ 接收 lobby 匹配请求，由用例层路由到对应游戏模式的 Matchmaker，并在匹配结果或确认请求产生后通过 RabbitMQ 发布领域消息。
 
 ## 架构
 
@@ -15,7 +15,7 @@ infra → handler → usecase → domain
 
 - `domain` 不依赖任何其他 `internal` 包。
 - `usecase` 只依赖 `domain`。
-- `handler` 负责消息 DTO、入站校验和边界转换。
+- RabbitMQ 入站/出站消息直接使用领域消息模型，不再保留独立 DTO 层。
 - `infra` 负责 Apollo、Redis、RabbitMQ 等外部系统接入。
 - `internal/app` 是运行时装配层，负责配置加载、依赖初始化、路由注册和后台任务启动。
 - `cmd/matcher` 只解析命令行参数并调用 `app.Run`。
@@ -33,18 +33,13 @@ cloudpvp-matcher/
 │   │   └── app.go               # 应用装配：配置、连接、仓储、用例、消费者、定时任务
 │   ├── domain/
 │   │   ├── config/              # GameMode、MatchConfig、配置仓储端口
+│   │   ├── lobby/               # Lobby、PlayerInfo、原始 lobby 仓储端口
 │   │   ├── match/               # Match、Team、Matchmaker、事件/锁端口、CSGO 5v5 匹配器
-│   │   └── ticket/              # Ticket、PlayerInfo、队列事件端口、票据仓储端口
+│   │   └── matchmaking/         # 匹配发布端口、MatchResult、ConfirmRequest
 │   ├── usecase/
-│   │   ├── matchmaking/         # 入队、匹配扫描、确认、结果发布编排
-│   │   └── ticket/              # 队列票据取消和过期清理
-│   ├── handler/
-│   │   ├── dto/                 # RabbitMQ 入站/出站 JSON 模型
-│   │   ├── consumer.go          # 消费者端口
-│   │   └── match_handler.go     # 匹配请求消费者处理器
+│   │   └── matchmaking/         # lobby 请求路由、Matchmaker 注册、确认和结果发布编排
 │   └── infra/
-│       ├── apollo/              # Apollo 客户端和匹配配置解析
-│       ├── cache/               # Redis 客户端和 TicketRepository 实现
+│       ├── cache/               # Redis 客户端和仓储实现
 │       ├── config/              # 本地 Apollo 启动配置加载、本地配置仓储
 │       └── mq/                  # RabbitMQ 连接、拓扑声明、消费者、发布者、路由常量
 ├── config.yaml                  # 本地 Apollo 启动配置
@@ -84,79 +79,59 @@ go run ./cmd/matcher -config ./config.yaml
 | 队列 | 绑定路由键 | 当前服务角色 |
 |---|---|---|
 | `matchmaking.request.queue` | `matchmaking.request` | 本服务消费 |
-| `matchmaking.queued.queue` | `matchmaking.queued` | 本服务发布，外部服务消费 |
+| `matchmaking.cancel.queue` | `matchmaking.cancel` | 本服务消费 |
 | `match.result.queue` | `match.result` | 本服务发布，外部服务消费 |
-| `server.create.queue` | `server.create` | 本服务发布，外部服务消费 |
 | `match.confirm.queue` | `match.confirm.*` | 预留确认相关队列，当前服务发布 `match.confirm.request` |
 
 ## 当前注册的消费者路由
 
-当前运行时只注册了一个消费者：
+当前运行时注册以下消费者：
 
-| 消费队列 | 路由键 | 处理器 | 入站模型 |
-|---|---|---|---|
-| `matchmaking.request.queue` | `matchmaking.request` | `handler.MatchHandler` | `dto.MatchRequest` |
+| 消费队列 | 路由键 | 入站模型 |
+|---|---|---|
+| `matchmaking.request.queue` | `matchmaking.request` | `domain/lobby.Lobby` |
+| `matchmaking.cancel.queue` | `matchmaking.cancel` | `domain/lobby.Lobby` |
 
-`MatchHandler` 会校验 `lobby_id`、`game_mode`、`members`，再把 DTO 转换为领域 `ticket.Ticket`，交给 `matchmaking.UseCase.Enqueue` 入队。入队方法不直接执行匹配。
+入站消息直接反序列化为领域 `lobby.Lobby`，再交给 `matchmaking.UseCase` 路由到对应游戏模式的 `Matchmaker`。
 
-### `MatchRequest`
+### `Lobby`
 
 ```json
 {
-  "message_id": "msg-001",
   "lobby_id": "lobby-001",
-  "game_mode": "csgo/5v5/competitive",
+  "game_mode": "matchmaker/5v5/competitive",
   "members": [
     {
-      "player_id": "player-001",
-      "name": "Player 1",
-      "region": "cn-east"
+      "player_id": "player-001"
     }
   ],
   "created_at": "2026-05-30T12:00:00Z"
 }
 ```
 
-字段来源于 `internal/handler/dto.MatchRequest`：
+字段来源于 `internal/domain/lobby.Lobby`：
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `message_id` | string | 消息 ID |
 | `lobby_id` | string | 队伍或房间 ID，必填 |
 | `game_mode` | string | 游戏模式，必填 |
-| `members` | `MemberInfo[]` | 参与匹配的玩家，必填且不能为空 |
+| `members` | `PlayerInfo[]` | 参与匹配的玩家 |
 | `created_at` | time | 请求创建时间 |
 
-`MemberInfo`：
+`PlayerInfo`：
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `player_id` | string | 玩家 ID |
-| `name` | string | 玩家展示名 |
-| `region` | string | 玩家区域，可为空 |
 
 ## 本服务发布的路由和模型
 
-入队和匹配成功后，服务通过 `infra/mq.Publisher` 发布以下消息。
+匹配完成后，服务通过 `infra/mq.Publisher` 发布以下消息。
 
 | 路由键 | 模型 | 触发条件 | 说明 |
 |---|---|---|---|
-| `matchmaking.queued` | `dto.TicketQueued` | lobby 成功持久化到匹配队列 | 通知业务服务 lobby 已进入匹配队列 |
-| `match.result` | `dto.MatchResult` | 匹配成功且无需玩家确认 | 通知业务服务匹配结果 |
-| `server.create` | `dto.ServerCreateRequest` | 匹配成功且无需玩家确认 | 请求服务器管理服务创建对局服务器 |
-| `match.confirm.request` | `dto.ConfirmRequest` | 匹配成功且配置 `need_confirm=true` | 请求玩家确认匹配 |
-
-### `TicketQueued`
-
-```json
-{
-  "message_id": "",
-  "lobby_id": "lobby-001",
-  "game_mode": "csgo/5v5/competitive",
-  "member_count": 3,
-  "queued_at": "2026-05-30T12:00:00Z"
-}
-```
+| `match.result` | `domain/matchmaking.MatchResult` | 匹配结果已确定 | 通知业务服务匹配结果 |
+| `match.confirm.request` | `domain/matchmaking.ConfirmRequest` | 需要玩家确认 | 请求业务服务确认指定 lobby |
 
 ### `MatchResult`
 
@@ -164,16 +139,14 @@ go run ./cmd/matcher -config ./config.yaml
 {
   "message_id": "",
   "match_id": "match-001",
-  "game_mode": "csgo/5v5/competitive",
+  "game_mode": "matchmaker/5v5/competitive",
   "teams": [
     {
       "lobby_id": "lobby-001",
       "lobby_ids": ["lobby-001"],
       "members": [
         {
-          "player_id": "player-001",
-          "name": "Player 1",
-          "region": "cn-east"
+          "player_id": "player-001"
         }
       ]
     }
@@ -182,46 +155,11 @@ go run ./cmd/matcher -config ./config.yaml
 }
 ```
 
-### `ServerCreateRequest`
-
-```json
-{
-  "message_id": "",
-  "match_id": "match-001",
-  "game_mode": "csgo/5v5/competitive",
-  "players": [
-    {
-      "player_id": "player-001",
-      "name": "Player 1",
-      "region": "cn-east"
-    }
-  ],
-  "created_at": "2026-05-30T12:00:00Z"
-}
-```
-
 ### `ConfirmRequest`
 
 ```json
 {
-  "message_id": "",
-  "match_id": "match-001",
-  "game_mode": "csgo/5v5/competitive",
-  "teams": [
-    {
-      "lobby_id": "lobby-001",
-      "lobby_ids": ["lobby-001"],
-      "members": [
-        {
-          "player_id": "player-001",
-          "name": "Player 1",
-          "region": "cn-east"
-        }
-      ]
-    }
-  ],
-  "timeout_seconds": 0,
-  "created_at": "2026-05-30T12:00:00Z"
+  "lobby_ids": ["lobby-001", "lobby-002"]
 }
 ```
 
@@ -229,7 +167,6 @@ go run ./cmd/matcher -config ./config.yaml
 
 - 当前发布者里 `message_id` 仍为空字符串，代码中标记为待上层注入。
 - `TeamInfo.lobby_ids` 表示该队伍由哪些 lobby 拼成；单 lobby 队伍会同时填充兼容字段 `lobby_id`。
-- `ConfirmRequest.timeout_seconds` 字段已在 DTO 中定义，但当前发布者尚未填充，实际发送值为 `0`。
 
 ## 配置项
 
@@ -251,7 +188,7 @@ go run ./cmd/matcher -config ./config.yaml
 ```json
 [
   {
-    "game_mode": "csgo/5v5/competitive",
+    "game_mode": "matchmaker/5v5/competitive",
     "team_size": 5,
     "team_count": 2,
     "need_confirm": false,

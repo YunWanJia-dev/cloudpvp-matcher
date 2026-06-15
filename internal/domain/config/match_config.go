@@ -22,17 +22,17 @@ func (c *MatchConfig) TotalPlayers() int {
 
 // UnmarshalJSON 支持 Apollo 中的字符串时长配置，例如 "30s"、"5m"。
 func (c *MatchConfig) UnmarshalJSON(data []byte) error {
-	var dto matchConfigJSON
-	if err := json.Unmarshal(data, &dto); err != nil {
+	var raw matchConfigJSON
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 
-	c.GameMode = dto.GameMode
-	c.TeamSize = dto.TeamSize
-	c.TeamCount = dto.TeamCount
-	c.NeedConfirm = dto.NeedConfirm
-	c.ConfirmTimeout = time.Duration(dto.ConfirmTimeout)
-	c.MatchTimeout = time.Duration(dto.MatchTimeout)
+	c.GameMode = raw.GameMode
+	c.TeamSize = raw.TeamSize
+	c.TeamCount = raw.TeamCount
+	c.NeedConfirm = raw.NeedConfirm
+	c.ConfirmTimeout = time.Duration(raw.ConfirmTimeout)
+	c.MatchTimeout = time.Duration(raw.MatchTimeout)
 	return nil
 }
 

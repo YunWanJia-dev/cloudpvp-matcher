@@ -1,17 +1,21 @@
 package match
 
 import (
+	"context"
+
 	"cloudpvp-matcher/internal/domain/config"
-	"cloudpvp-matcher/internal/domain/ticket"
+	domainlobby "cloudpvp-matcher/internal/domain/lobby"
 )
 
-// Matchmaker 是从票据池中寻找对手配对的核心领域服务接口。
-// 每个游戏模式提供各自的 Matchmaker 实现。
+// Matchmaker 是单个游戏模式的匹配流程处理器。
+// 每个实现自行负责该模式的校验、持久化、候选查询和取消逻辑。
 type Matchmaker interface {
-	// Supports 返回此匹配器是否支持给定的游戏模式。
-	Supports(mode config.GameMode) bool
+	// Mode 返回该处理器负责的游戏模式。
+	Mode() config.GameMode
 
-	// FindMatch 尝试从池中组装一个满足配置的完整对局。
-	// 如果找到对手则返回 Match，否则返回 nil（暂无合适对手）。
-	FindMatch(pool []*ticket.Ticket, cfg *config.MatchConfig) *Match
+	// Submit 处理指定模式的开始匹配请求。
+	Submit(ctx context.Context, lobby *domainlobby.Lobby) error
+
+	// Cancel 处理指定模式的取消匹配请求。
+	Cancel(ctx context.Context, lobbyID string) error
 }
