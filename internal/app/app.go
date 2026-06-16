@@ -2,7 +2,7 @@
 package app
 
 import (
-	"cloudpvp-matcher/internal/infra/mq/publisher"
+	domainmatchmaker "cloudpvp-matcher/internal/domain/match/matchmaker/csgo_5v5"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -19,6 +19,7 @@ import (
 	"cloudpvp-matcher/internal/infra/cache/repository"
 	localconfig "cloudpvp-matcher/internal/infra/config"
 	"cloudpvp-matcher/internal/infra/mq"
+	"cloudpvp-matcher/internal/infra/mq/publisher"
 	"cloudpvp-matcher/internal/usecase/matchmaking"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -97,10 +98,13 @@ func Run(ctx context.Context, opts Options) error {
 
 	newPublisher := publisher.NewPublisher(publishChannel, rabbitMQConfig)
 	lobbyRepo := repository.NewRedisLobbyRepository(redisClient)
+	queueRepo := repository.NewRedisMatchmakerQueueRepository(redisClient)
 
 	matchmakingUC := matchmaking.NewUseCase(lobbyRepo, newPublisher)
 
-	matchmakers := []domainmatch.Matchmaker{}
+	matchmakers := []domainmatch.Matchmaker{
+		domainmatchmaker.NewCSGO5v5Matchmaker(queueRepo),
+	}
 
 	for _, matchmaker := range matchmakers {
 		if err := matchmakingUC.AddMatchmaker(matchmaker); err != nil {
