@@ -15,6 +15,8 @@ import (
 
 	domainlobby "cloudpvp-matcher/internal/domain/lobby"
 	domainmatch "cloudpvp-matcher/internal/domain/match"
+	domainmatchmaking "cloudpvp-matcher/internal/domain/matchmaking"
+	"cloudpvp-matcher/internal/infra/asynclock"
 	"cloudpvp-matcher/internal/infra/cache"
 	"cloudpvp-matcher/internal/infra/cache/repository"
 	localconfig "cloudpvp-matcher/internal/infra/config"
@@ -24,6 +26,8 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
+
+const matchResultChannelSize = 1024
 
 // Options 配置匹配服务启动参数。
 type Options struct {
@@ -99,11 +103,13 @@ func Run(ctx context.Context, opts Options) error {
 	newPublisher := publisher.NewPublisher(publishChannel, rabbitMQConfig)
 	lobbyRepo := repository.NewRedisLobbyRepository(redisClient)
 	queueRepo := repository.NewRedisMatchmakerQueueRepository(redisClient)
+	lockManager := asynclock.NewRedisLockManager(redisClient)
+	matchResultCh := make(chan *domainmatchmaking.MatchResult, matchResultChannelSize)
 
-	matchmakingUC := matchmaking.NewUseCase(lobbyRepo, newPublisher)
+	matchmakingUC := matchmaking.NewUseCase(lobbyRepo, newPublisher, lockManager)
 
 	matchmakers := []domainmatch.Matchmaker{
-		domainmatchmaker.NewCSGO5v5Matchmaker(queueRepo),
+		domainmatchmaker.NewCSGO5v5Matchmaker(queueRepo, matchResultCh),
 	}
 
 	for _, matchmaker := range matchmakers {
@@ -111,6 +117,8 @@ func Run(ctx context.Context, opts Options) error {
 			return err
 		}
 	}
+
+	go runMatchResultConsumer(runCtx, matchResultCh, matchmakingUC)
 
 	go runConsumer(runCtx, requestChannel, "matchmaking.request.queue", "匹配请求", func(ctx context.Context, body []byte) error {
 		lobby, err := decodeLobby(body)
@@ -130,6 +138,20 @@ func Run(ctx context.Context, opts Options) error {
 	slog.Info("cloudpvp-matcher 已启动")
 	<-runCtx.Done()
 	return ctx.Err()
+}
+
+// runMatchResultConsumer 消费 matchmaker 提交的匹配结果。
+func runMatchResultConsumer(ctx context.Context, matchResults <-chan *domainmatchmaking.MatchResult, usecase *matchmaking.UseCase) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case match := <-matchResults:
+			if err := usecase.HandleMatchResult(ctx, match); err != nil {
+				slog.Warn("处理匹配结果失败", "error", err)
+			}
+		}
+	}
 }
 
 // runConsumer 启动一个 RabbitMQ 队列消费者并将消息体交给业务处理函数。

@@ -9,21 +9,24 @@ import (
 	"cloudpvp-matcher/internal/domain/config"
 	domainlobby "cloudpvp-matcher/internal/domain/lobby"
 	domainmatch "cloudpvp-matcher/internal/domain/match"
+	domainmatchmaking "cloudpvp-matcher/internal/domain/matchmaking"
 )
 
 const csgo5v5MaxLobbyMembers = 5
 
 // CSGO5v5Matchmaker 实现 CS:GO 5v5 竞技匹配的入队和取消流程。
 type CSGO5v5Matchmaker struct {
-	queueRepo LobbyQueueRepository
+	queueRepo     LobbyQueueRepository
+	matchResultCh chan<- *domainmatchmaking.MatchResult
 }
 
 var _ domainmatch.Matchmaker = (*CSGO5v5Matchmaker)(nil)
 
 // NewCSGO5v5Matchmaker 创建一个新的 CS:GO 5v5 匹配器。
-func NewCSGO5v5Matchmaker(queueRepo LobbyQueueRepository) *CSGO5v5Matchmaker {
+func NewCSGO5v5Matchmaker(queueRepo LobbyQueueRepository, matchResultCh chan<- *domainmatchmaking.MatchResult) *CSGO5v5Matchmaker {
 	return &CSGO5v5Matchmaker{
-		queueRepo: queueRepo,
+		queueRepo:     queueRepo,
+		matchResultCh: matchResultCh,
 	}
 }
 
