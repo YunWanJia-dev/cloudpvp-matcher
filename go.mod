@@ -6,7 +6,7 @@ require (
 	github.com/apolloconfig/agollo/v5 v5.0.0
 	github.com/go-redsync/redsync/v4 v4.16.0
 	github.com/rabbitmq/amqp091-go v1.11.0
-	github.com/redis/go-redis/v9 v9.19.0
+	github.com/redis/go-redis/v9 v9.21.0
 	github.com/spf13/viper v1.8.1
 )
 
