@@ -59,3 +59,16 @@ func LoadLocalAppConfig(path string) (*AppConfig, error) {
 		},
 	}, nil
 }
+
+func GenerateLocalAppConfig(path string) error {
+	v.SetDefault("apollo.app_id", "")
+	v.SetDefault("apollo.cluster", "")
+	v.SetDefault("apollo.namespace", "")
+	v.SetDefault("apollo.meta_addr", "")
+	v.SetDefault("apollo.secret", "")
+	v.SetDefault("apollo.is_backup_config", false)
+	v.SetDefault("apollo.backup_config_path", "")
+	v.SetDefault("apollo.must_start", true)
+	v.SetDefault("apollo.sync_server_timeout", 10)
+	return v.WriteConfigAs(path)
+}

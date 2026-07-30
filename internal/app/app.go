@@ -46,6 +46,14 @@ func Run(ctx context.Context, opts Options) error {
 		configPath = "config.yaml"
 	}
 
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		err := localconfig.GenerateLocalAppConfig(configPath)
+		if err != nil {
+			log.Fatalln("生成配置文件失败：", err)
+		}
+		log.Fatalln("检测到配置文件不存在，已生成配置文件...")
+	}
+
 	appConfig, err := localconfig.LoadLocalAppConfig(configPath)
 	if err != nil {
 		return fmt.Errorf("读取本地 Apollo 配置失败: %w", err)
