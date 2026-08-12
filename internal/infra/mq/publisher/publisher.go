@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -30,7 +31,7 @@ func (p *Publisher) publish(ctx context.Context, routingKey string, payload inte
 	if err != nil {
 		return fmt.Errorf("序列化发布消息失败: %w", err)
 	}
-	return p.ch.PublishWithContext(
+	if err := p.ch.PublishWithContext(
 		ctx,
 		p.exchange,
 		routingKey,
@@ -42,5 +43,10 @@ func (p *Publisher) publish(ctx context.Context, routingKey string, payload inte
 			Timestamp:    time.Now(),
 			Body:         body,
 		},
-	)
+	); err != nil {
+		return err
+	}
+	// PublishWithContext 仅表示消息已提交到连接；是否被 broker 接收/路由需 publisher confirm 才能确认。
+	slog.Info("RabbitMQ 消息已提交发布", "exchange", p.exchange, "routing_key", routingKey, "body_bytes", len(body))
+	return nil
 }

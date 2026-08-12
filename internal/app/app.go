@@ -79,6 +79,10 @@ func Run(ctx context.Context, opts Options) error {
 
 	rabbitMQ := mq.NewRabbitMQConnection(rabbitMQConfig)
 	defer rabbitMQ.Close()
+	slog.Info("RabbitMQ 连接成功", "exchange", rabbitMQConfig.ExchangeName)
+	if err := mq.DeclareTopology(rabbitMQ, rabbitMQConfig.ExchangeName); err != nil {
+		return err
+	}
 
 	publishChannel, err := rabbitMQ.Channel()
 	if err != nil {
@@ -128,19 +132,27 @@ func Run(ctx context.Context, opts Options) error {
 
 	go runMatchResultConsumer(runCtx, matchResultCh, matchmakingUC)
 
-	go runConsumer(runCtx, requestChannel, "matchmaking.request.queue", "匹配请求", func(ctx context.Context, body []byte) error {
+	go runConsumer(runCtx, requestChannel, mq.RequestQueue, "匹配请求", func(ctx context.Context, body []byte) error {
 		lobby, err := decodeLobby(body)
 		if err != nil {
 			return err
 		}
-		return matchmakingUC.SubmitLobby(ctx, lobby)
+		if err := matchmakingUC.SubmitLobby(ctx, lobby); err != nil {
+			return err
+		}
+		slog.Info("匹配请求处理完成", "lobby_id", lobby.LobbyID, "game_mode", lobby.GameMode, "member_count", len(lobby.Members))
+		return nil
 	})
-	go runConsumer(runCtx, cancelChannel, "matchmaking.cancel.queue", "取消匹配", func(ctx context.Context, body []byte) error {
+	go runConsumer(runCtx, cancelChannel, mq.CancelQueue, "取消匹配", func(ctx context.Context, body []byte) error {
 		lobby, err := decodeLobby(body)
 		if err != nil {
 			return err
 		}
-		return matchmakingUC.CancelLobby(ctx, lobby.LobbyID)
+		if err := matchmakingUC.CancelLobby(ctx, lobby.LobbyID); err != nil {
+			return err
+		}
+		slog.Info("取消匹配请求处理完成", "lobby_id", lobby.LobbyID)
+		return nil
 	})
 
 	slog.Info("cloudpvp-matcher 已启动")
@@ -180,12 +192,28 @@ func runConsumer(ctx context.Context, ch *amqp.Channel, queueName, name string, 
 				slog.Warn("RabbitMQ 消费通道关闭", "name", name, "queue", queueName)
 				return
 			}
+			slog.Info(
+				"收到 RabbitMQ 消息",
+				"name", name,
+				"queue", queueName,
+				"routing_key", msg.RoutingKey,
+				"delivery_tag", msg.DeliveryTag,
+				"redelivered", msg.Redelivered,
+				"body_bytes", len(msg.Body),
+			)
 			if err := handle(ctx, msg.Body); err != nil {
-				slog.Error("RabbitMQ 消息处理失败", "name", name, "queue", queueName, "error", err)
-				_ = msg.Nack(false, true)
+				slog.Error("RabbitMQ 消息处理失败", "name", name, "queue", queueName, "routing_key", msg.RoutingKey, "delivery_tag", msg.DeliveryTag, "error", err)
+				// 当前拓扑没有死信队列；拒绝且不重入队可避免坏消息形成无限热循环。
+				if nackErr := msg.Nack(false, false); nackErr != nil {
+					slog.Error("RabbitMQ 消息拒绝失败", "name", name, "queue", queueName, "delivery_tag", msg.DeliveryTag, "error", nackErr)
+				}
 				continue
 			}
-			_ = msg.Ack(false)
+			if err := msg.Ack(false); err != nil {
+				slog.Error("RabbitMQ 消息确认失败", "name", name, "queue", queueName, "delivery_tag", msg.DeliveryTag, "error", err)
+				continue
+			}
+			slog.Info("RabbitMQ 消息已确认", "name", name, "queue", queueName, "delivery_tag", msg.DeliveryTag)
 		}
 	}
 }
@@ -203,5 +231,6 @@ func decodeLobby(body []byte) (*domainlobby.Lobby, error) {
 	}
 	lobby.CreatedAt = now
 	lobby.UpdatedAt = now
+	slog.Info("RabbitMQ lobby 消息解析成功", "lobby_id", lobby.LobbyID, "game_mode", lobby.GameMode, "member_count", len(lobby.Members))
 	return &lobby, nil
 }
