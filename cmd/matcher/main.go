@@ -3,6 +3,7 @@ package main
 import (
 	"cloudpvp-matcher/internal/app"
 	"context"
+	"errors"
 	"flag"
 )
 
@@ -12,7 +13,7 @@ func main() {
 	flag.Parse()
 
 	err := app.Run(context.Background(), app.Options{ConfigPath: *configPath})
-	if err != nil {
+	if err != nil && !errors.Is(err, context.Canceled) {
 		panic(err)
 	}
 }

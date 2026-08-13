@@ -1,6 +1,10 @@
 package app
 
-import "testing"
+import (
+	"errors"
+	"fmt"
+	"testing"
+)
 
 // TestDecodeLobbyFromBizMessage 校验 biz lobby 的 MQ 消息可被 matcher 解析。
 func TestDecodeLobbyFromBizMessage(t *testing.T) {
@@ -24,6 +28,18 @@ func TestDecodeLobbyFromBizMessage(t *testing.T) {
 	}
 }
 
+// TestClassifyLobbyHandlingError 校验确定性校验失败不会进入无限重试。
+func TestClassifyLobbyHandlingError(t *testing.T) {
+	validationErr := classifyLobbyHandlingError(fmt.Errorf("csgo 5v5 matchmaker: lobby member count exceeds 5"))
+	if !errors.Is(validationErr, errInvalidLobbyMessage) {
+		t.Fatalf("validation error = %v", validationErr)
+	}
+	infrastructureErr := fmt.Errorf("redis unavailable")
+	if classified := classifyLobbyHandlingError(infrastructureErr); errors.Is(classified, errInvalidLobbyMessage) {
+		t.Fatalf("infrastructure error misclassified = %v", classified)
+	}
+}
+
 // TestDecodeLobbyFromCancelMessage 校验取消消息可复用同一 lobby 契约。
 func TestDecodeLobbyFromCancelMessage(t *testing.T) {
 	lobby, err := decodeLobby([]byte(`{"lobby_id":"456","game_mode":"matchmaker/5v5/competitive","members":[],"created_at":"2026-08-12T06:31:00Z"}`))
@@ -32,5 +48,18 @@ func TestDecodeLobbyFromCancelMessage(t *testing.T) {
 	}
 	if lobby.LobbyID != "456" {
 		t.Fatalf("LobbyID = %q, want %q", lobby.LobbyID, "456")
+	}
+}
+
+// TestDecodeLobbyRejectsInvalidContract 校验坏消息会被标记为不可重试契约错误。
+func TestDecodeLobbyRejectsInvalidContract(t *testing.T) {
+	for _, body := range [][]byte{
+		[]byte(`not-json`),
+		[]byte(`{"game_mode":"matchmaker/5v5/competitive"}`),
+		[]byte(`{"lobby_id":"123"}`),
+	} {
+		if _, err := decodeLobby(body); !errors.Is(err, errInvalidLobbyMessage) {
+			t.Fatalf("decodeLobby(%q) error = %v", body, err)
+		}
 	}
 }

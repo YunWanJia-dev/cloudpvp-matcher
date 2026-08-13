@@ -8,13 +8,19 @@ import (
 )
 
 const (
-	RequestQueue      = "matchmaking.request.queue"
-	RequestRoutingKey = "matchmaking.request"
-	CancelQueue       = "matchmaking.cancel.queue"
-	CancelRoutingKey  = "matchmaking.cancel"
+	RequestQueue              = "matchmaking.request.queue"
+	RequestRoutingKey         = "matchmaking.request"
+	CancelQueue               = "matchmaking.cancel.queue"
+	CancelRoutingKey          = "matchmaking.cancel"
+	LobbyQueue                = "matchmaking.lobby.queue"
+	LobbyRoutingKey           = "matchmaking.lobby"
+	MatchBizQueue             = "match.biz.queue"
+	MatchServerAllocatorQueue = "match.server-allocator.queue"
+	MatchCreateRoutingKey     = "match.create"
+	MatchUpdateRoutingKey     = "match.update"
 )
 
-// DeclareTopology 声明 matcher 入站消息所需的 RabbitMQ 拓扑。
+// DeclareTopology 声明匹配命令与回传消息所需的 RabbitMQ 拓扑。
 func DeclareTopology(connection *amqp.Connection, exchangeName string) error {
 	ch, err := connection.Channel()
 	if err != nil {
@@ -33,6 +39,10 @@ func DeclareTopology(connection *amqp.Connection, exchangeName string) error {
 	}{
 		{queue: RequestQueue, routingKey: RequestRoutingKey},
 		{queue: CancelQueue, routingKey: CancelRoutingKey},
+		{queue: LobbyQueue, routingKey: LobbyRoutingKey},
+		{queue: MatchBizQueue, routingKey: MatchCreateRoutingKey},
+		{queue: MatchBizQueue, routingKey: MatchUpdateRoutingKey},
+		{queue: MatchServerAllocatorQueue, routingKey: MatchCreateRoutingKey},
 	}
 	for _, binding := range bindings {
 		if _, err := ch.QueueDeclare(binding.queue, true, false, false, false, nil); err != nil {

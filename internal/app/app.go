@@ -5,17 +5,18 @@ import (
 	domainmatchmaker "cloudpvp-matcher/internal/domain/match/matchmaker/csgo_5v5"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	domainlobby "cloudpvp-matcher/internal/domain/lobby"
 	domainmatch "cloudpvp-matcher/internal/domain/match"
-	domainmatchmaking "cloudpvp-matcher/internal/domain/matchmaking"
 	"cloudpvp-matcher/internal/infra/asynclock"
 	"cloudpvp-matcher/internal/infra/cache"
 	"cloudpvp-matcher/internal/infra/cache/repository"
@@ -27,7 +28,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-const matchResultChannelSize = 1024
+var errInvalidLobbyMessage = errors.New("无效 lobby 消息")
 
 // Options 配置匹配服务启动参数。
 type Options struct {
@@ -112,16 +113,18 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}(cancelChannel)
 
-	newPublisher := publisher.NewPublisher(publishChannel, rabbitMQConfig)
+	newPublisher, err := publisher.NewPublisher(publishChannel, rabbitMQConfig)
+	if err != nil {
+		return err
+	}
 	lobbyRepo := repository.NewRedisLobbyRepository(redisClient)
 	queueRepo := repository.NewRedisMatchmakerQueueRepository(redisClient)
 	lockManager := asynclock.NewRedisLockManager(redisClient)
-	matchResultCh := make(chan *domainmatchmaking.MatchResult, matchResultChannelSize)
 
 	matchmakingUC := matchmaking.NewUseCase(lobbyRepo, newPublisher, lockManager)
 
 	matchmakers := []domainmatch.Matchmaker{
-		domainmatchmaker.NewCSGO5v5Matchmaker(queueRepo, matchResultCh),
+		domainmatchmaker.NewCSGO5v5Matchmaker(queueRepo),
 	}
 
 	for _, matchmaker := range matchmakers {
@@ -130,7 +133,7 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}
 
-	go runMatchResultConsumer(runCtx, matchResultCh, matchmakingUC)
+	go runMatchScanner(runCtx, matchmakingUC)
 
 	go runConsumer(runCtx, requestChannel, mq.RequestQueue, "匹配请求", func(ctx context.Context, body []byte) error {
 		lobby, err := decodeLobby(body)
@@ -138,7 +141,7 @@ func Run(ctx context.Context, opts Options) error {
 			return err
 		}
 		if err := matchmakingUC.SubmitLobby(ctx, lobby); err != nil {
-			return err
+			return classifyLobbyHandlingError(err)
 		}
 		slog.Info("匹配请求处理完成", "lobby_id", lobby.LobbyID, "game_mode", lobby.GameMode, "member_count", len(lobby.Members))
 		return nil
@@ -149,7 +152,7 @@ func Run(ctx context.Context, opts Options) error {
 			return err
 		}
 		if err := matchmakingUC.CancelLobby(ctx, lobby.LobbyID); err != nil {
-			return err
+			return classifyLobbyHandlingError(err)
 		}
 		slog.Info("取消匹配请求处理完成", "lobby_id", lobby.LobbyID)
 		return nil
@@ -160,15 +163,42 @@ func Run(ctx context.Context, opts Options) error {
 	return ctx.Err()
 }
 
-// runMatchResultConsumer 消费 matchmaker 提交的匹配结果。
-func runMatchResultConsumer(ctx context.Context, matchResults <-chan *domainmatchmaking.MatchResult, usecase *matchmaking.UseCase) {
+// classifyLobbyHandlingError 将确定性的业务校验错误标记为不可重试消息错误。
+func classifyLobbyHandlingError(err error) error {
+	if err == nil {
+		return nil
+	}
+	message := err.Error()
+	for _, marker := range []string{
+		"未找到匹配处理器",
+		"unsupported game_mode",
+		"member count must be positive",
+		"member count exceeds",
+	} {
+		if strings.Contains(message, marker) {
+			return fmt.Errorf("%w: %v", errInvalidLobbyMessage, err)
+		}
+	}
+	return err
+}
+
+// runMatchScanner 按固定间隔触发自然组队扫描。
+func runMatchScanner(ctx context.Context, usecase *matchmaking.UseCase) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case match := <-matchResults:
-			if err := usecase.HandleMatchResult(ctx, match); err != nil {
-				slog.Warn("处理匹配结果失败", "error", err)
+		case <-ticker.C:
+			matchedCount, err := usecase.RunMatchCycle(ctx)
+			if err != nil {
+				slog.Warn("匹配扫描失败", "error", err)
+				continue
+			}
+			if matchedCount > 0 {
+				slog.Info("匹配扫描完成", "matched_count", matchedCount)
 			}
 		}
 	}
@@ -203,8 +233,9 @@ func runConsumer(ctx context.Context, ch *amqp.Channel, queueName, name string, 
 			)
 			if err := handle(ctx, msg.Body); err != nil {
 				slog.Error("RabbitMQ 消息处理失败", "name", name, "queue", queueName, "routing_key", msg.RoutingKey, "delivery_tag", msg.DeliveryTag, "error", err)
-				// 当前拓扑没有死信队列；拒绝且不重入队可避免坏消息形成无限热循环。
-				if nackErr := msg.Nack(false, false); nackErr != nil {
+				// 契约错误直接丢弃；Redis、锁或发布确认等瞬时错误保留消息等待恢复。
+				requeue := !errors.Is(err, errInvalidLobbyMessage)
+				if nackErr := msg.Nack(false, requeue); nackErr != nil {
 					slog.Error("RabbitMQ 消息拒绝失败", "name", name, "queue", queueName, "delivery_tag", msg.DeliveryTag, "error", nackErr)
 				}
 				continue
@@ -222,7 +253,13 @@ func runConsumer(ctx context.Context, ch *amqp.Channel, queueName, name string, 
 func decodeLobby(body []byte) (*domainlobby.Lobby, error) {
 	var lobby domainlobby.Lobby
 	if err := json.Unmarshal(body, &lobby); err != nil {
-		return nil, fmt.Errorf("反序列化 lobby 失败: %w", err)
+		return nil, fmt.Errorf("%w: 反序列化失败: %v", errInvalidLobbyMessage, err)
+	}
+	if strings.TrimSpace(lobby.LobbyID) == "" {
+		return nil, fmt.Errorf("%w: lobby_id 不能为空", errInvalidLobbyMessage)
+	}
+	if lobby.GameMode == "" {
+		return nil, fmt.Errorf("%w: game_mode 不能为空", errInvalidLobbyMessage)
 	}
 
 	now := time.Now()

@@ -3,6 +3,7 @@ package csgo_5v5
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,21 +13,23 @@ import (
 	domainmatchmaking "cloudpvp-matcher/internal/domain/matchmaking"
 )
 
-const csgo5v5MaxLobbyMembers = 5
+const (
+	csgo5v5TeamSize             = 5
+	csgo5v5TeamCount            = 2
+	csgo5v5CandidateLimitPerBin = 20
+)
 
 // CSGO5v5Matchmaker 实现 CS:GO 5v5 竞技匹配的入队和取消流程。
 type CSGO5v5Matchmaker struct {
-	queueRepo     LobbyQueueRepository
-	matchResultCh chan<- *domainmatchmaking.MatchResult
+	queueRepo LobbyQueueRepository
 }
 
 var _ domainmatch.Matchmaker = (*CSGO5v5Matchmaker)(nil)
 
 // NewCSGO5v5Matchmaker 创建一个新的 CS:GO 5v5 匹配器。
-func NewCSGO5v5Matchmaker(queueRepo LobbyQueueRepository, matchResultCh chan<- *domainmatchmaking.MatchResult) *CSGO5v5Matchmaker {
+func NewCSGO5v5Matchmaker(queueRepo LobbyQueueRepository) *CSGO5v5Matchmaker {
 	return &CSGO5v5Matchmaker{
-		queueRepo:     queueRepo,
-		matchResultCh: matchResultCh,
+		queueRepo: queueRepo,
 	}
 }
 
@@ -56,7 +59,7 @@ func (m *CSGO5v5Matchmaker) Submit(ctx context.Context, lobby *domainlobby.Lobby
 	if memberCount <= 0 {
 		return fmt.Errorf("csgo 5v5 matchmaker: lobby member count must be positive lobby_id=%s", lobbyID)
 	}
-	if memberCount > csgo5v5MaxLobbyMembers {
+	if memberCount > csgo5v5TeamSize {
 		return fmt.Errorf("csgo 5v5 matchmaker: lobby member count exceeds 5 lobby_id=%s count=%d", lobbyID, memberCount)
 	}
 
@@ -84,4 +87,123 @@ func (m *CSGO5v5Matchmaker) Cancel(ctx context.Context, lobbyID string) error {
 	}
 
 	return m.queueRepo.RemoveQueuedLobby(ctx, lobbyID)
+}
+
+// FindMatch 从各人数桶读取最早候选，并组装两支完整的 5 人队伍。
+func (m *CSGO5v5Matchmaker) FindMatch(ctx context.Context) (*domainmatchmaking.Match, error) {
+	if m == nil || m.queueRepo == nil {
+		return nil, fmt.Errorf("csgo 5v5 matchmaker: queue repository is nil")
+	}
+
+	candidates := make([]LobbyQueueEntry, 0)
+	for memberCount := 1; memberCount <= csgo5v5TeamSize; memberCount++ {
+		entries, err := m.queueRepo.ListOldestByMemberCount(ctx, memberCount, csgo5v5CandidateLimitPerBin)
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, entries...)
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].QueuedAt.Equal(candidates[j].QueuedAt) {
+			return candidates[i].LobbyID < candidates[j].LobbyID
+		}
+		return candidates[i].QueuedAt.Before(candidates[j].QueuedAt)
+	})
+
+	teams, ok := buildTeams(candidates, csgo5v5TeamCount, csgo5v5TeamSize)
+	if !ok {
+		return nil, nil
+	}
+
+	matchTeams := make([]domainmatchmaking.Team, 0, len(teams))
+	for _, team := range teams {
+		lobbyIDs := make([]string, 0, len(team))
+		for _, candidateIndex := range team {
+			lobbyIDs = append(lobbyIDs, candidates[candidateIndex].LobbyID)
+		}
+		matchTeams = append(matchTeams, domainmatchmaking.Team{LobbyIDs: lobbyIDs})
+	}
+
+	now := time.Now().UTC()
+	return &domainmatchmaking.Match{
+		GameMode:  config.GameModeCSGO5v5,
+		Status:    domainmatchmaking.MatchStatusWaitingForServer,
+		Teams:     matchTeams,
+		Server:    nil,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, nil
+}
+
+// RemoveMatched 从匹配队列中批量移除已组成比赛的 lobby。
+func (m *CSGO5v5Matchmaker) RemoveMatched(ctx context.Context, lobbyIDs []string) error {
+	if m == nil || m.queueRepo == nil {
+		return fmt.Errorf("csgo 5v5 matchmaker: queue repository is nil")
+	}
+	return m.queueRepo.RemoveQueuedLobbies(ctx, lobbyIDs)
+}
+
+// HasQueuedLobbies 判断候选大厅在持锁后是否仍全部处于等待队列。
+func (m *CSGO5v5Matchmaker) HasQueuedLobbies(ctx context.Context, lobbyIDs []string) (bool, error) {
+	if m == nil || m.queueRepo == nil {
+		return false, fmt.Errorf("csgo 5v5 matchmaker: queue repository is nil")
+	}
+	return m.queueRepo.HasQueuedLobbies(ctx, lobbyIDs)
+}
+
+// buildTeams 通过短路回溯从候选中组出指定数量和人数的队伍。
+func buildTeams(candidates []LobbyQueueEntry, teamCount, teamSize int) ([][]int, bool) {
+	used := make([]bool, len(candidates))
+	teams := make([][]int, 0, teamCount)
+
+	var buildNextTeam func() bool
+	buildNextTeam = func() bool {
+		if len(teams) == teamCount {
+			return true
+		}
+
+		var findTeam func(start, currentSize int, current []int) bool
+		findTeam = func(start, currentSize int, current []int) bool {
+			if currentSize == teamSize {
+				team := append([]int(nil), current...)
+				for _, index := range team {
+					used[index] = true
+				}
+				teams = append(teams, team)
+				if buildNextTeam() {
+					return true
+				}
+				teams = teams[:len(teams)-1]
+				for _, index := range team {
+					used[index] = false
+				}
+				return false
+			}
+
+			for index := start; index < len(candidates); index++ {
+				if used[index] {
+					continue
+				}
+				nextSize := currentSize + candidates[index].MemberCount
+				if nextSize > teamSize {
+					continue
+				}
+				if findTeam(index+1, nextSize, append(current, index)) {
+					return true
+				}
+			}
+			return false
+		}
+
+		return findTeam(0, 0, nil)
+	}
+
+	if !buildNextTeam() {
+		return nil, false
+	}
+	return teams, true
 }

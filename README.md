@@ -1,6 +1,6 @@
 # cloudpvp-matcher
 
-`cloudpvp-matcher` 是 cloudpvp 对战平台的匹配服务。服务从 RabbitMQ 接收 lobby 匹配请求，由用例层路由到对应游戏模式的 Matchmaker，并在匹配结果或确认请求产生后通过 RabbitMQ 发布领域消息。
+`cloudpvp-matcher` 是 cloudpvp 对战平台的匹配服务。服务从 RabbitMQ 接收 lobby 的开始/取消匹配命令，将等待大厅写入 Redis 队列，并由后台扫描器自然组成比赛。组队成功后，Matcher 发布完整 `Match` 到 `match.create`，由服务器分配服务补充服务器信息并通过 `match.update` 更新业务侧。
 
 ## 架构
 
@@ -26,18 +26,17 @@ infra → handler → usecase → domain
 cloudpvp-matcher/
 ├── cmd/
 │   └── matcher/
-│       ├── main.go              # 解析 flag，调用 app.Run
-│       └── exit.go              # 统一处理启动错误和退出码
+│       └── main.go              # 解析 flag，调用 app.Run
 ├── internal/
 │   ├── app/
 │   │   └── app.go               # 应用装配：配置、连接、仓储、用例、消费者、定时任务
 │   ├── domain/
 │   │   ├── config/              # GameMode、MatchConfig、配置仓储端口
 │   │   ├── lobby/               # Lobby、PlayerInfo、原始 lobby 仓储端口
-│   │   ├── match/               # Match、Team、Matchmaker、事件/锁端口、CSGO 5v5 匹配器
-│   │   └── matchmaking/         # 匹配发布端口、MatchResult、ConfirmRequest
+│   │   ├── match/               # Matchmaker 端口和 CSGO 5v5 自然组队实现
+│   │   └── matchmaking/         # LobbyEvent、完整 Match 契约和发布端口
 │   ├── usecase/
-│   │   └── matchmaking/         # lobby 请求路由、Matchmaker 注册、确认和结果发布编排
+│   │   └── matchmaking/         # lobby 入队/取消、匹配扫描、锁和 match.create 发布编排
 │   └── infra/
 │       ├── cache/               # Redis 客户端和仓储实现
 │       ├── config/              # 本地 Apollo 启动配置加载、本地配置仓储
@@ -61,27 +60,32 @@ go run ./cmd/matcher -config ./config.yaml
 
 1. 读取本地 Apollo 启动配置。
 2. 初始化 Apollo 客户端。
-3. 从 Apollo 读取 Redis、RabbitMQ 和匹配模式配置。
+3. 从 Apollo 读取 Redis 和 RabbitMQ 配置。
 4. 初始化 Redis、RabbitMQ，并声明 RabbitMQ 拓扑。
-5. 装配 Redis 票据仓储、本地配置仓储、RabbitMQ 事件发布者。
+5. 装配 Redis lobby/匹配队列仓储和 RabbitMQ 事件发布者。
 6. 注册领域匹配器，目前为 `CSGO5v5Matchmaker`。
-7. 创建 Redis 分布式锁、`matchmaking.UseCase` 和 `MatchHandler`。
-8. 注册并启动匹配请求消费者。
-9. 启动后台匹配扫描器，每秒按游戏模式尝试组装对局。
-10. 启动票据过期清理定时任务，每 30 秒清理超过 5 分钟仍在队列中的票据。
+7. 创建 Redis 分布式锁和 `matchmaking.UseCase`。
+8. 注册并启动匹配请求与取消消费者。
+9. 启动每秒执行一次的自然组队扫描器；CSGO 5v5 队列凑满两支 5 人队伍后发布 `match.create`。
 
 ## RabbitMQ 拓扑
 
 交换器名称来自 Apollo 配置项 `rabbitmq.exchange_name`，类型为 `topic`。
 
-服务启动时会声明以下队列和绑定：
+服务会在同一个 topic 交换器上幂等声明以下队列和绑定：
 
 | 队列 | 绑定路由键 | 当前服务角色 |
 |---|---|---|
 | `matchmaking.request.queue` | `matchmaking.request` | 本服务消费 |
 | `matchmaking.cancel.queue` | `matchmaking.cancel` | 本服务消费 |
-| `match.result.queue` | `match.result` | 本服务发布，外部服务消费 |
-| `match.confirm.queue` | `match.confirm.*` | 预留确认相关队列，当前服务发布 `match.confirm.request` |
+| `matchmaking.lobby.queue` | `matchmaking.lobby` | 本服务发布，Lobby 消费 |
+| `match.biz.queue` | `match.create`、`match.update` | Matcher/Allocator 发布，业务服务消费完整 Match |
+| `match.server-allocator.queue` | `match.create` | Matcher 发布，服务器分配服务消费 |
+
+比赛消息流只有以下两步：
+
+1. Matcher 组队成功，发布 `status=WAITING_FOR_SERVER` 且 `server=null` 的完整 Match 到 `match.create`。`match.biz.queue` 和 `match.server-allocator.queue` 都会收到该消息。
+2. 服务器分配服务消费 `match.create`，在同一个完整 Match 上补充 `server.ip`、将状态更新为 `IN_PROGRESS`，再发布到 `match.update`。只有 `match.biz.queue` 绑定该路由键。
 
 ## 当前注册的消费者路由
 
@@ -126,47 +130,67 @@ go run ./cmd/matcher -config ./config.yaml
 
 ## 本服务发布的路由和模型
 
-匹配完成后，服务通过 `infra/mq.Publisher` 发布以下消息。
+服务通过 `infra/mq.Publisher` 发布大厅状态和新建比赛两类消息。`match.update` 由服务器分配服务发布，Matcher 仅声明其到业务队列的绑定。
 
 | 路由键 | 模型 | 触发条件 | 说明 |
 |---|---|---|---|
-| `match.result` | `domain/matchmaking.MatchResult` | 匹配结果已确定 | 通知业务服务匹配结果 |
-| `match.confirm.request` | `domain/matchmaking.ConfirmRequest` | 需要玩家确认 | 请求业务服务确认指定 lobby |
+| `matchmaking.lobby` | `domain/matchmaking.LobbyEvent` | 大厅状态变化 | 更新单个业务大厅状态 |
+| `match.create` | `domain/matchmaking.Match` | 自然组队成功 | 同时通知业务服务和服务器分配服务 |
 
-### `MatchResult`
+### `LobbyEvent`
 
 ```json
 {
-  "message_id": "",
+  "lobby_id": "lobby-001",
+  "status": "MATCHING",
+  "reason": ""
+}
+```
+
+### `Match`
+
+```json
+{
   "match_id": "match-001",
   "game_mode": "matchmaker/5v5/competitive",
+  "status": "WAITING_FOR_SERVER",
   "teams": [
     {
-      "lobby_id": "lobby-001",
-      "lobby_ids": ["lobby-001"],
+      "lobby_ids": ["lobby-001", "lobby-002"],
       "members": [
-        {
-          "player_id": "player-001"
-        }
+        {"player_id": "player-001"},
+        {"player_id": "player-002"},
+        {"player_id": "player-003"},
+        {"player_id": "player-004"},
+        {"player_id": "player-005"}
+      ]
+    },
+    {
+      "lobby_ids": ["lobby-003", "lobby-004"],
+      "members": [
+        {"player_id": "player-006"},
+        {"player_id": "player-007"},
+        {"player_id": "player-008"},
+        {"player_id": "player-009"},
+        {"player_id": "player-010"}
       ]
     }
   ],
-  "matched_at": "2026-05-30T12:00:00Z"
+  "server": null,
+  "created_at": "2026-05-30T12:00:00Z",
+  "updated_at": "2026-05-30T12:00:00Z"
 }
 ```
 
-### `ConfirmRequest`
+Matcher 发布的 `match.create` 必须满足：
 
-```json
-{
-  "lobby_ids": ["lobby-001", "lobby-002"]
-}
-```
+- `status` 固定为 `WAITING_FOR_SERVER`。
+- `server` 固定为 `null`。
+- `teams[].lobby_ids` 保留每支队伍由哪些 lobby 组成。
+- `teams[].members` 是这些 lobby 中玩家的完整扁平列表。
+- 顶层字段固定为 `match_id`、`game_mode`、`status`、`teams`、`server`、`created_at`、`updated_at`。
 
-注意：
-
-- 当前发布者里 `message_id` 仍为空字符串，代码中标记为待上层注入。
-- `TeamInfo.lobby_ids` 表示该队伍由哪些 lobby 拼成；单 lobby 队伍会同时填充兼容字段 `lobby_id`。
+当前测试用服务器分配服务发布 `match.update` 时保留上述完整字段，只将状态改为 `IN_PROGRESS`，并固定写入 `{"ip":"127.0.0.1"}`。
 
 ## 配置项
 
@@ -181,22 +205,6 @@ go run ./cmd/matcher -config ./config.yaml
 | `redis.db` | Redis DB 编号 |
 | `rabbitmq.url` | RabbitMQ 连接地址，必填 |
 | `rabbitmq.exchange_name` | RabbitMQ topic 交换器名称，必填 |
-| `match_modes` | 匹配模式配置 JSON 数组 |
-
-`match_modes` 示例：
-
-```json
-[
-  {
-    "game_mode": "matchmaker/5v5/competitive",
-    "team_size": 5,
-    "team_count": 2,
-    "need_confirm": false,
-    "confirm_timeout": "30s",
-    "match_timeout": "5m"
-  }
-]
-```
 
 ## 本地开发
 
@@ -213,4 +221,3 @@ go run ./cmd/matcher -config ./config.yaml
 1. 在 `internal/domain/config/game_mode.go` 添加 `GameMode` 常量。
 2. 在 `internal/domain/match/` 实现 `Matchmaker`。
 3. 在 `internal/app/app.go` 注册新的匹配器。
-4. 在 Apollo 的 `match_modes` 中添加对应游戏模式配置。

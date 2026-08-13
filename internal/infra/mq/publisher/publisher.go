@@ -17,12 +17,15 @@ type Publisher struct {
 	exchange string
 }
 
-// NewPublisher 创建基于 RabbitMQ channel 的强类型发布器。
-func NewPublisher(ch *amqp.Channel, cfg *mq.RabbitMQConfig) *Publisher {
+// NewPublisher 创建启用 broker confirm 的 RabbitMQ 强类型发布器。
+func NewPublisher(ch *amqp.Channel, cfg *mq.RabbitMQConfig) (*Publisher, error) {
+	if err := ch.Confirm(false); err != nil {
+		return nil, fmt.Errorf("启用 RabbitMQ publisher confirm 失败: %w", err)
+	}
 	return &Publisher{
 		ch:       ch,
 		exchange: cfg.ExchangeName,
-	}
+	}, nil
 }
 
 // publish 将出站消息序列化并发布到指定路由键。
@@ -31,11 +34,11 @@ func (p *Publisher) publish(ctx context.Context, routingKey string, payload inte
 	if err != nil {
 		return fmt.Errorf("序列化发布消息失败: %w", err)
 	}
-	if err := p.ch.PublishWithContext(
+	confirmation, err := p.ch.PublishWithDeferredConfirmWithContext(
 		ctx,
 		p.exchange,
 		routingKey,
-		false,
+		true,
 		false,
 		amqp.Publishing{
 			ContentType:  "application/json",
@@ -43,10 +46,17 @@ func (p *Publisher) publish(ctx context.Context, routingKey string, payload inte
 			Timestamp:    time.Now(),
 			Body:         body,
 		},
-	); err != nil {
-		return err
+	)
+	if err != nil {
+		return fmt.Errorf("提交 RabbitMQ 消息失败 routing_key=%s: %w", routingKey, err)
 	}
-	// PublishWithContext 仅表示消息已提交到连接；是否被 broker 接收/路由需 publisher confirm 才能确认。
-	slog.Info("RabbitMQ 消息已提交发布", "exchange", p.exchange, "routing_key", routingKey, "body_bytes", len(body))
+	acknowledged, err := confirmation.WaitContext(ctx)
+	if err != nil {
+		return fmt.Errorf("等待 RabbitMQ 发布确认失败 routing_key=%s: %w", routingKey, err)
+	}
+	if !acknowledged {
+		return fmt.Errorf("RabbitMQ broker 拒绝消息 routing_key=%s", routingKey)
+	}
+	slog.Info("RabbitMQ 消息发布已确认", "exchange", p.exchange, "routing_key", routingKey, "body_bytes", len(body))
 	return nil
 }

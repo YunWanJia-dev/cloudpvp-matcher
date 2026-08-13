@@ -2,34 +2,23 @@ package publisher
 
 import (
 	domainmatchmaking "cloudpvp-matcher/internal/domain/matchmaking"
+	"cloudpvp-matcher/internal/infra/mq"
 	"context"
 )
 
 var _ domainmatchmaking.Publisher = (*Publisher)(nil)
 
 const (
-	inQueueRoutingKey        = "matchmaking.in_queue"
-	kickedQueueRoutingKey    = "matchmaking.kicked_queue"
-	matchResultRoutingKey    = "match.result"
-	confirmRequestRoutingKey = "match.confirm.request"
+	lobbyRoutingKey = mq.LobbyRoutingKey
+	matchRoutingKey = mq.MatchCreateRoutingKey
 )
 
-// PublishInQueue 发布 lobby 已进入匹配队列事件。
-func (p *Publisher) PublishInQueue(ctx context.Context, lobbyID string) error {
-	return p.publish(ctx, inQueueRoutingKey, domainmatchmaking.NewInQueueEvent(lobbyID))
+// PublishLobbyStatus 发布 lobby 状态更新事件。
+func (p *Publisher) PublishLobbyStatus(ctx context.Context, lobbyID string, status domainmatchmaking.LobbyStatus, reason string) error {
+	return p.publish(ctx, lobbyRoutingKey, domainmatchmaking.NewLobbyEvent(lobbyID, status, reason))
 }
 
-// PublishKickedQueue 发布 lobby 被移出匹配队列事件。
-func (p *Publisher) PublishKickedQueue(ctx context.Context, lobbyID, reason string) error {
-	return p.publish(ctx, kickedQueueRoutingKey, domainmatchmaking.NewKickedQueueEvent(lobbyID, reason))
-}
-
-// PublishConfirmRequest 发布玩家确认请求。
-func (p *Publisher) PublishConfirmRequest(ctx context.Context, lobbyIDs []string) error {
-	return p.publish(ctx, confirmRequestRoutingKey, domainmatchmaking.NewConfirmRequest(lobbyIDs))
-}
-
-// PublishMatchResult 发布匹配结果。
-func (p *Publisher) PublishMatchResult(ctx context.Context, match *domainmatchmaking.MatchResult) error {
-	return p.publish(ctx, matchResultRoutingKey, match)
+// PublishMatch 发布等待服务器分配的完整比赛快照。
+func (p *Publisher) PublishMatch(ctx context.Context, match *domainmatchmaking.Match) error {
+	return p.publish(ctx, matchRoutingKey, match)
 }
