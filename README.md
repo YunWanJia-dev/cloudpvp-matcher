@@ -32,7 +32,7 @@ cloudpvp-matcher/
 │   │   └── app.go               # 应用装配：配置、连接、仓储、用例、消费者、定时任务
 │   ├── domain/
 │   │   ├── config/              # GameMode、MatchConfig、配置仓储端口
-│   │   ├── lobby/               # Lobby、PlayerInfo、原始 lobby 仓储端口
+│   │   ├── lobby/               # Lobby 与原始 lobby 仓储端口
 │   │   ├── match/               # Matchmaker 端口和 CSGO 5v5 自然组队实现
 │   │   └── matchmaking/         # LobbyEvent、完整 Match 契约和发布端口
 │   ├── usecase/
@@ -103,12 +103,8 @@ go run ./cmd/matcher -config ./config.yaml
 ```json
 {
   "lobby_id": "lobby-001",
-  "game_mode": "matchmaker/5v5/competitive",
-  "members": [
-    {
-      "player_id": "player-001"
-    }
-  ],
+  "game_mode": "CS2/5v5/competitive",
+  "player_count": 1,
   "created_at": "2026-05-30T12:00:00Z"
 }
 ```
@@ -119,14 +115,8 @@ go run ./cmd/matcher -config ./config.yaml
 |---|---|---|
 | `lobby_id` | string | 队伍或房间 ID，必填 |
 | `game_mode` | string | 游戏模式，必填 |
-| `members` | `PlayerInfo[]` | 参与匹配的玩家 |
+| `player_count` | int | 参与匹配的玩家数量 |
 | `created_at` | time | 请求创建时间 |
-
-`PlayerInfo`：
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `player_id` | string | 玩家 ID |
 
 ## 本服务发布的路由和模型
 
@@ -152,28 +142,16 @@ go run ./cmd/matcher -config ./config.yaml
 ```json
 {
   "match_id": "match-001",
-  "game_mode": "matchmaker/5v5/competitive",
+  "game_mode": "CS2/5v5/competitive",
   "status": "WAITING_FOR_SERVER",
   "teams": [
     {
       "lobby_ids": ["lobby-001", "lobby-002"],
-      "members": [
-        {"player_id": "player-001"},
-        {"player_id": "player-002"},
-        {"player_id": "player-003"},
-        {"player_id": "player-004"},
-        {"player_id": "player-005"}
-      ]
+      "members": []
     },
     {
       "lobby_ids": ["lobby-003", "lobby-004"],
-      "members": [
-        {"player_id": "player-006"},
-        {"player_id": "player-007"},
-        {"player_id": "player-008"},
-        {"player_id": "player-009"},
-        {"player_id": "player-010"}
-      ]
+      "members": []
     }
   ],
   "server": null,
@@ -187,7 +165,7 @@ Matcher 发布的 `match.create` 必须满足：
 - `status` 固定为 `WAITING_FOR_SERVER`。
 - `server` 固定为 `null`。
 - `teams[].lobby_ids` 保留每支队伍由哪些 lobby 组成。
-- `teams[].members` 是这些 lobby 中玩家的完整扁平列表。
+- `teams[].members` 暂保留为空数组，以兼容现有下游消息模型。
 - 顶层字段固定为 `match_id`、`game_mode`、`status`、`teams`、`server`、`created_at`、`updated_at`。
 
 当前测试用服务器分配服务发布 `match.update` 时保留上述完整字段，只将状态改为 `IN_PROGRESS`，并固定写入 `{"ip":"127.0.0.1"}`。

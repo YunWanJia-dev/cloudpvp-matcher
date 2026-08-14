@@ -55,12 +55,12 @@ func (m *CSGO5v5Matchmaker) Submit(ctx context.Context, lobby *domainlobby.Lobby
 		return fmt.Errorf("csgo 5v5 matchmaker: unsupported game_mode=%s", lobby.GameMode)
 	}
 
-	memberCount := lobby.TeamSize()
-	if memberCount <= 0 {
+	playerCount := lobby.PlayerCount
+	if playerCount <= 0 {
 		return fmt.Errorf("csgo 5v5 matchmaker: lobby member count must be positive lobby_id=%s", lobbyID)
 	}
-	if memberCount > csgo5v5TeamSize {
-		return fmt.Errorf("csgo 5v5 matchmaker: lobby member count exceeds 5 lobby_id=%s count=%d", lobbyID, memberCount)
+	if playerCount > csgo5v5TeamSize {
+		return fmt.Errorf("csgo 5v5 matchmaker: lobby member count exceeds 5 lobby_id=%s count=%d", lobbyID, playerCount)
 	}
 
 	queuedAt := lobby.CreatedAt
@@ -70,7 +70,7 @@ func (m *CSGO5v5Matchmaker) Submit(ctx context.Context, lobby *domainlobby.Lobby
 
 	return m.queueRepo.Enqueue(ctx, LobbyQueueEntry{
 		LobbyID:     lobbyID,
-		MemberCount: memberCount,
+		MemberCount: playerCount,
 		QueuedAt:    queuedAt,
 	})
 }
@@ -125,7 +125,10 @@ func (m *CSGO5v5Matchmaker) FindMatch(ctx context.Context) (*domainmatchmaking.M
 		for _, candidateIndex := range team {
 			lobbyIDs = append(lobbyIDs, candidates[candidateIndex].LobbyID)
 		}
-		matchTeams = append(matchTeams, domainmatchmaking.Team{LobbyIDs: lobbyIDs})
+		matchTeams = append(matchTeams, domainmatchmaking.Team{
+			LobbyIDs: lobbyIDs,
+			Members:  []domainmatchmaking.Member{},
+		})
 	}
 
 	now := time.Now().UTC()

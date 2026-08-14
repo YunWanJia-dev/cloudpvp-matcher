@@ -143,7 +143,7 @@ func Run(ctx context.Context, opts Options) error {
 		if err := matchmakingUC.SubmitLobby(ctx, lobby); err != nil {
 			return classifyLobbyHandlingError(err)
 		}
-		slog.Info("匹配请求处理完成", "lobby_id", lobby.LobbyID, "game_mode", lobby.GameMode, "member_count", len(lobby.Members))
+		slog.Info("匹配请求处理完成", "lobby_id", lobby.LobbyID, "game_mode", lobby.GameMode, "player_count", lobby.PlayerCount)
 		return nil
 	})
 	go runConsumer(runCtx, cancelChannel, mq.CancelQueue, "取消匹配", func(ctx context.Context, body []byte) error {
@@ -268,6 +268,6 @@ func decodeLobby(body []byte) (*domainlobby.Lobby, error) {
 	}
 	lobby.CreatedAt = now
 	lobby.UpdatedAt = now
-	slog.Info("RabbitMQ lobby 消息解析成功", "lobby_id", lobby.LobbyID, "game_mode", lobby.GameMode, "member_count", len(lobby.Members))
+	slog.Info("RabbitMQ lobby 消息解析成功", "lobby_id", lobby.LobbyID, "game_mode", lobby.GameMode, "player_count", lobby.PlayerCount)
 	return &lobby, nil
 }

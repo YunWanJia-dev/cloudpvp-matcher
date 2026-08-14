@@ -130,7 +130,7 @@ func TestSubmitAndCancelUseSameLobbyLock(t *testing.T) {
 	if err := uc.AddMatchmaker(matchmaker); err != nil {
 		t.Fatal(err)
 	}
-	lobby := &domainlobby.Lobby{LobbyID: "1", GameMode: config.GameModeCSGO5v5, Members: []domainlobby.PlayerInfo{{PlayerID: "p1"}}}
+	lobby := &domainlobby.Lobby{LobbyID: "1", GameMode: config.GameModeCSGO5v5, PlayerCount: 1}
 
 	if err := uc.SubmitLobby(context.Background(), lobby); err != nil {
 		t.Fatalf("SubmitLobby() error = %v", err)
@@ -164,7 +164,7 @@ func TestSubmitFailurePublishesWaiting(t *testing.T) {
 	}
 }
 
-// TestRunMatchCyclePublishesCompleteWaitingForServerMatch 校验自然扫描补全玩家并发布完整比赛。
+// TestRunMatchCyclePublishesCompleteWaitingForServerMatch 校验自然扫描发布完整比赛。
 func TestRunMatchCyclePublishesCompleteWaitingForServerMatch(t *testing.T) {
 	lobby1 := testLobby("1", 5)
 	lobby2 := testLobby("2", 5)
@@ -194,7 +194,7 @@ func TestRunMatchCyclePublishesCompleteWaitingForServerMatch(t *testing.T) {
 	if publisher.match.MatchID == "" || publisher.match.Status != domainmatchmaking.MatchStatusWaitingForServer || publisher.match.Server != nil {
 		t.Fatalf("match = %#v", publisher.match)
 	}
-	if len(publisher.match.Teams) != 2 || len(publisher.match.Teams[0].Members) != 5 || len(publisher.match.Teams[1].Members) != 5 {
+	if len(publisher.match.Teams) != 2 || len(publisher.match.Teams[0].Members) != 0 || len(publisher.match.Teams[1].Members) != 0 {
 		t.Fatalf("teams = %#v", publisher.match.Teams)
 	}
 	if !reflect.DeepEqual(matchmaker.removedLobbyIDs, []string{"1", "2"}) || len(repo.lobbies) != 0 {
@@ -207,9 +207,5 @@ func TestRunMatchCyclePublishesCompleteWaitingForServerMatch(t *testing.T) {
 
 // testLobby 创建指定人数的测试大厅。
 func testLobby(lobbyID string, memberCount int) *domainlobby.Lobby {
-	members := make([]domainlobby.PlayerInfo, memberCount)
-	for index := range members {
-		members[index] = domainlobby.PlayerInfo{PlayerID: fmt.Sprintf("%s-player-%d", lobbyID, index+1)}
-	}
-	return &domainlobby.Lobby{LobbyID: lobbyID, GameMode: config.GameModeCSGO5v5, Members: members}
+	return &domainlobby.Lobby{LobbyID: lobbyID, GameMode: config.GameModeCSGO5v5, PlayerCount: memberCount}
 }

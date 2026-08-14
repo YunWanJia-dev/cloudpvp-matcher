@@ -185,7 +185,7 @@ func (uc *UseCase) runMatchOnce(ctx context.Context, matchmaker domainmatch.Matc
 	return matched, nil
 }
 
-// completeMatch 补全队伍玩家，发布 match.create，并从等待队列清理已匹配 lobby。
+// completeMatch 校验大厅快照，发布 match.create，并从等待队列清理已匹配 lobby。
 func (uc *UseCase) completeMatch(ctx context.Context, matchmaker domainmatch.Matchmaker, match *domainmatchmaking.Match) error {
 	if match == nil {
 		return fmt.Errorf("match 不能为空")
@@ -195,7 +195,6 @@ func (uc *UseCase) completeMatch(ctx context.Context, matchmaker domainmatch.Mat
 		return fmt.Errorf("match lobby_ids 不能为空")
 	}
 
-	lobbies := make(map[string]*domainlobby.Lobby, len(lobbyIDs))
 	for _, lobbyID := range lobbyIDs {
 		lobby, err := uc.lobbyRepo.FindByLobbyID(ctx, lobbyID)
 		if err != nil {
@@ -208,17 +207,6 @@ func (uc *UseCase) completeMatch(ctx context.Context, matchmaker domainmatch.Mat
 			}
 			return nil
 		}
-		lobbies[lobbyID] = lobby
-	}
-
-	for teamIndex := range match.Teams {
-		members := make([]domainmatchmaking.Member, 0)
-		for _, lobbyID := range match.Teams[teamIndex].LobbyIDs {
-			for _, member := range lobbies[lobbyID].Members {
-				members = append(members, domainmatchmaking.Member{PlayerID: member.PlayerID})
-			}
-		}
-		match.Teams[teamIndex].Members = members
 	}
 
 	now := time.Now().UTC()
