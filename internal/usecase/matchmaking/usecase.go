@@ -244,30 +244,6 @@ func (uc *UseCase) completeMatch(ctx context.Context, matchmaker domainmatch.Mat
 	return nil
 }
 
-// HandleConfirmRequest 处理 matchmaker 产出的确认请求。
-func (uc *UseCase) HandleConfirmRequest(ctx context.Context, lobbyIDs []string) error {
-	if len(lobbyIDs) == 0 {
-		return fmt.Errorf("确认 lobby 列表不能为空")
-	}
-	return uc.withLobbyLock(ctx, lobbyIDs, func(ctx context.Context) error {
-		for _, lobbyID := range lobbyIDs {
-			lobby, err := uc.lobbyRepo.FindByLobbyID(ctx, lobbyID)
-			if err != nil {
-				return fmt.Errorf("查询原始 lobby 失败 lobby_id=%s: %w", lobbyID, err)
-			}
-			if lobby == nil {
-				return nil
-			}
-		}
-		for _, lobbyID := range lobbyIDs {
-			if err := uc.publisher.PublishLobbyStatus(ctx, lobbyID, domainmatchmaking.LobbyStatusMatched, ""); err != nil {
-				return fmt.Errorf("发布 lobby 确认状态失败 lobby_id=%s: %w", lobbyID, err)
-			}
-		}
-		return nil
-	})
-}
-
 // listMatchmakers 返回按游戏模式稳定排序的处理器快照。
 func (uc *UseCase) listMatchmakers() []domainmatch.Matchmaker {
 	uc.mu.RLock()

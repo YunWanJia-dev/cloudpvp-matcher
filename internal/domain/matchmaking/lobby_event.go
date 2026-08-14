@@ -8,8 +8,6 @@ const (
 	LobbyStatusMatching LobbyStatus = "MATCHING"
 	// LobbyStatusWaiting 表示大厅已退出匹配并恢复等待状态。
 	LobbyStatusWaiting LobbyStatus = "WAITING"
-	// LobbyStatusMatched 表示大厅已匹配并等待后续确认。
-	LobbyStatusMatched LobbyStatus = "MATCHED"
 )
 
 // LobbyEvent 表示单个大厅的状态更新。
