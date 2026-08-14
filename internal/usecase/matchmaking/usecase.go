@@ -20,20 +20,27 @@ import (
 
 // UseCase 负责匹配请求入口编排、模式处理器路由和匹配完成发布。
 type UseCase struct {
-	mu          sync.RWMutex
-	matchmakers map[config.GameMode]domainmatch.Matchmaker
-	lobbyRepo   domainlobby.Repository
-	lockManager domainlobby.LockManager
-	publisher   domainmatchmaking.Publisher
+	mu             sync.RWMutex
+	matchmakers    map[config.GameMode]domainmatch.Matchmaker
+	lobbyRepo      domainlobby.Repository
+	lockManager    domainlobby.LockManager
+	lobbyPublisher domainmatchmaking.LobbyPublisher
+	matchPublisher domainmatchmaking.MatchPublisher
 }
 
 // NewUseCase 创建匹配用例实例。
-func NewUseCase(lobbyRepo domainlobby.Repository, publisher domainmatchmaking.Publisher, lockManager domainlobby.LockManager) *UseCase {
+func NewUseCase(
+	lobbyRepo domainlobby.Repository,
+	lobbyPublisher domainmatchmaking.LobbyPublisher,
+	matchPublisher domainmatchmaking.MatchPublisher,
+	lockManager domainlobby.LockManager,
+) *UseCase {
 	return &UseCase{
-		matchmakers: make(map[config.GameMode]domainmatch.Matchmaker),
-		lobbyRepo:   lobbyRepo,
-		lockManager: lockManager,
-		publisher:   publisher,
+		matchmakers:    make(map[config.GameMode]domainmatch.Matchmaker),
+		lobbyRepo:      lobbyRepo,
+		lockManager:    lockManager,
+		lobbyPublisher: lobbyPublisher,
+		matchPublisher: matchPublisher,
 	}
 }
 
@@ -79,7 +86,7 @@ func (uc *UseCase) SubmitLobby(ctx context.Context, lobby *domainlobby.Lobby) er
 
 	return uc.withLobbyLock(ctx, []string{lobby.LobbyID}, func(ctx context.Context) error {
 		if err := matchmaker.Submit(ctx, lobby); err != nil {
-			if publishErr := uc.publisher.PublishLobbyStatus(ctx, lobby.LobbyID, domainmatchmaking.LobbyStatusWaiting, err.Error()); publishErr != nil {
+			if publishErr := uc.lobbyPublisher.PublishLobbyStatus(ctx, lobby.LobbyID, domainmatchmaking.LobbyStatusWaiting, err.Error()); publishErr != nil {
 				return fmt.Errorf("提交匹配失败并且发布等待状态失败 lobby_id=%s submit_error=%v: %w", lobby.LobbyID, err, publishErr)
 			}
 			return err
@@ -89,7 +96,7 @@ func (uc *UseCase) SubmitLobby(ctx context.Context, lobby *domainlobby.Lobby) er
 			_ = matchmaker.Cancel(ctx, lobby.LobbyID)
 			return fmt.Errorf("保存原始 lobby 失败 lobby_id=%s: %w", lobby.LobbyID, err)
 		}
-		if err := uc.publisher.PublishLobbyStatus(ctx, lobby.LobbyID, domainmatchmaking.LobbyStatusMatching, ""); err != nil {
+		if err := uc.lobbyPublisher.PublishLobbyStatus(ctx, lobby.LobbyID, domainmatchmaking.LobbyStatusMatching, ""); err != nil {
 			return fmt.Errorf("发布 lobby 入队事件失败 lobby_id=%s: %w", lobby.LobbyID, err)
 		}
 		return nil
@@ -122,7 +129,7 @@ func (uc *UseCase) CancelLobby(ctx context.Context, lobbyID string) error {
 		if err := uc.lobbyRepo.Remove(ctx, lobbyID); err != nil {
 			return err
 		}
-		if err := uc.publisher.PublishLobbyStatus(ctx, lobbyID, domainmatchmaking.LobbyStatusWaiting, ""); err != nil {
+		if err := uc.lobbyPublisher.PublishLobbyStatus(ctx, lobbyID, domainmatchmaking.LobbyStatusWaiting, ""); err != nil {
 			return fmt.Errorf("发布 lobby 取消状态失败 lobby_id=%s: %w", lobbyID, err)
 		}
 		return nil
@@ -218,7 +225,7 @@ func (uc *UseCase) completeMatch(ctx context.Context, matchmaker domainmatch.Mat
 	match.Server = nil
 	match.UpdatedAt = now
 
-	if err := uc.publisher.PublishMatch(ctx, match); err != nil {
+	if err := uc.matchPublisher.PublishMatch(ctx, match); err != nil {
 		return fmt.Errorf("发布完整比赛失败 match_id=%s: %w", match.MatchID, err)
 	}
 	if err := matchmaker.RemoveMatched(ctx, lobbyIDs); err != nil {

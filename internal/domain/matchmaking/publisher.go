@@ -5,11 +5,14 @@ import (
 	"context"
 )
 
-// Publisher 定义匹配流程需要的强类型出站发布端口。
-type Publisher interface {
+// LobbyPublisher 定义大厅状态更新的出站发布端口。
+type LobbyPublisher interface {
 	// PublishLobbyStatus 发布单个大厅的状态更新。
 	PublishLobbyStatus(ctx context.Context, lobbyID string, status LobbyStatus, reason string) error
+}
 
+// MatchPublisher 定义完整比赛快照的出站发布端口。
+type MatchPublisher interface {
 	// PublishMatch 发布 Matcher 生成的完整比赛快照。
 	PublishMatch(ctx context.Context, match *Match) error
 }

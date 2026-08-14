@@ -113,15 +113,17 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}(cancelChannel)
 
-	newPublisher, err := publisher.NewPublisher(publishChannel, rabbitMQConfig)
+	rabbitMQPublisher, err := publisher.NewPublisher(publishChannel, rabbitMQConfig)
 	if err != nil {
 		return err
 	}
+	lobbyPublisher := publisher.NewLobbyPublisher(rabbitMQPublisher)
+	matchPublisher := publisher.NewMatchPublisher(rabbitMQPublisher)
 	lobbyRepo := repository.NewRedisLobbyRepository(redisClient)
 	queueRepo := repository.NewRedisMatchmakerQueueRepository(redisClient)
 	lockManager := asynclock.NewRedisLockManager(redisClient)
 
-	matchmakingUC := matchmaking.NewUseCase(lobbyRepo, newPublisher, lockManager)
+	matchmakingUC := matchmaking.NewUseCase(lobbyRepo, lobbyPublisher, matchPublisher, lockManager)
 
 	matchmakers := []domainmatch.Matchmaker{
 		domainmatchmaker.NewCSGO5v5Matchmaker(queueRepo),

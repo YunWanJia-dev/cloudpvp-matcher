@@ -51,23 +51,26 @@ func (m *testLockManager) WithLobbyLock(ctx context.Context, lobbyIDs []string, 
 	return fn(ctx)
 }
 
-type testPublisher struct {
-	match       *domainmatchmaking.Match
+type testLobbyPublisher struct {
 	lobbyID     string
 	lobbyStatus domainmatchmaking.LobbyStatus
 	lobbyReason string
 }
 
 // PublishLobbyStatus 记录测试状态事件。
-func (p *testPublisher) PublishLobbyStatus(_ context.Context, lobbyID string, status domainmatchmaking.LobbyStatus, reason string) error {
+func (p *testLobbyPublisher) PublishLobbyStatus(_ context.Context, lobbyID string, status domainmatchmaking.LobbyStatus, reason string) error {
 	p.lobbyID = lobbyID
 	p.lobbyStatus = status
 	p.lobbyReason = reason
 	return nil
 }
 
+type testMatchPublisher struct {
+	match *domainmatchmaking.Match
+}
+
 // PublishMatch 记录完整比赛。
-func (p *testPublisher) PublishMatch(_ context.Context, match *domainmatchmaking.Match) error {
+func (p *testMatchPublisher) PublishMatch(_ context.Context, match *domainmatchmaking.Match) error {
 	p.match = match
 	return nil
 }
@@ -123,10 +126,10 @@ func (m *testMatchmaker) HasQueuedLobbies(context.Context, []string) (bool, erro
 // TestSubmitAndCancelUseSameLobbyLock 校验开始和取消匹配使用同一 lobby 锁键。
 func TestSubmitAndCancelUseSameLobbyLock(t *testing.T) {
 	repo := &testLobbyRepository{lobbies: map[string]*domainlobby.Lobby{}}
-	publisher := &testPublisher{}
+	lobbyPublisher := &testLobbyPublisher{}
 	lockManager := &testLockManager{}
 	matchmaker := &testMatchmaker{}
-	uc := NewUseCase(repo, publisher, lockManager)
+	uc := NewUseCase(repo, lobbyPublisher, &testMatchPublisher{}, lockManager)
 	if err := uc.AddMatchmaker(matchmaker); err != nil {
 		t.Fatal(err)
 	}
@@ -141,16 +144,16 @@ func TestSubmitAndCancelUseSameLobbyLock(t *testing.T) {
 	if len(lockManager.locked) != 2 || !reflect.DeepEqual(lockManager.locked[0], []string{"1"}) || !reflect.DeepEqual(lockManager.locked[1], []string{"1"}) {
 		t.Fatalf("locked = %#v", lockManager.locked)
 	}
-	if publisher.lobbyStatus != domainmatchmaking.LobbyStatusWaiting || matchmaker.canceled != "1" {
-		t.Fatalf("status=%q canceled=%q", publisher.lobbyStatus, matchmaker.canceled)
+	if lobbyPublisher.lobbyStatus != domainmatchmaking.LobbyStatusWaiting || matchmaker.canceled != "1" {
+		t.Fatalf("status=%q canceled=%q", lobbyPublisher.lobbyStatus, matchmaker.canceled)
 	}
 }
 
 // TestSubmitFailurePublishesWaiting 校验入队失败会在同一锁内回传 WAITING 和原因。
 func TestSubmitFailurePublishesWaiting(t *testing.T) {
 	repo := &testLobbyRepository{lobbies: map[string]*domainlobby.Lobby{}}
-	publisher := &testPublisher{}
-	uc := NewUseCase(repo, publisher, &testLockManager{})
+	lobbyPublisher := &testLobbyPublisher{}
+	uc := NewUseCase(repo, lobbyPublisher, &testMatchPublisher{}, &testLockManager{})
 	if err := uc.AddMatchmaker(&testMatchmaker{submitErr: fmt.Errorf("invalid lobby")}); err != nil {
 		t.Fatal(err)
 	}
@@ -159,8 +162,8 @@ func TestSubmitFailurePublishesWaiting(t *testing.T) {
 	if err == nil {
 		t.Fatal("SubmitLobby() error = nil")
 	}
-	if publisher.lobbyStatus != domainmatchmaking.LobbyStatusWaiting || publisher.lobbyReason != "invalid lobby" {
-		t.Fatalf("status=%q reason=%q", publisher.lobbyStatus, publisher.lobbyReason)
+	if lobbyPublisher.lobbyStatus != domainmatchmaking.LobbyStatusWaiting || lobbyPublisher.lobbyReason != "invalid lobby" {
+		t.Fatalf("status=%q reason=%q", lobbyPublisher.lobbyStatus, lobbyPublisher.lobbyReason)
 	}
 }
 
@@ -169,7 +172,7 @@ func TestRunMatchCyclePublishesCompleteWaitingForServerMatch(t *testing.T) {
 	lobby1 := testLobby("1", 5)
 	lobby2 := testLobby("2", 5)
 	repo := &testLobbyRepository{lobbies: map[string]*domainlobby.Lobby{"1": lobby1, "2": lobby2}}
-	publisher := &testPublisher{}
+	matchPublisher := &testMatchPublisher{}
 	lockManager := &testLockManager{}
 	candidate := &domainmatchmaking.Match{
 		GameMode: config.GameModeCSGO5v5,
@@ -179,7 +182,7 @@ func TestRunMatchCyclePublishesCompleteWaitingForServerMatch(t *testing.T) {
 		},
 	}
 	matchmaker := &testMatchmaker{findResults: []*domainmatchmaking.Match{candidate}, queued: true}
-	uc := NewUseCase(repo, publisher, lockManager)
+	uc := NewUseCase(repo, &testLobbyPublisher{}, matchPublisher, lockManager)
 	if err := uc.AddMatchmaker(matchmaker); err != nil {
 		t.Fatal(err)
 	}
@@ -188,14 +191,14 @@ func TestRunMatchCyclePublishesCompleteWaitingForServerMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunMatchCycle() error = %v", err)
 	}
-	if matchedCount != 1 || publisher.match == nil {
-		t.Fatalf("matchedCount=%d match=%#v", matchedCount, publisher.match)
+	if matchedCount != 1 || matchPublisher.match == nil {
+		t.Fatalf("matchedCount=%d match=%#v", matchedCount, matchPublisher.match)
 	}
-	if publisher.match.MatchID == "" || publisher.match.Status != domainmatchmaking.MatchStatusWaitingForServer || publisher.match.Server != nil {
-		t.Fatalf("match = %#v", publisher.match)
+	if matchPublisher.match.MatchID == "" || matchPublisher.match.Status != domainmatchmaking.MatchStatusWaitingForServer || matchPublisher.match.Server != nil {
+		t.Fatalf("match = %#v", matchPublisher.match)
 	}
-	if len(publisher.match.Teams) != 2 || len(publisher.match.Teams[0].Members) != 0 || len(publisher.match.Teams[1].Members) != 0 {
-		t.Fatalf("teams = %#v", publisher.match.Teams)
+	if len(matchPublisher.match.Teams) != 2 || len(matchPublisher.match.Teams[0].Members) != 0 || len(matchPublisher.match.Teams[1].Members) != 0 {
+		t.Fatalf("teams = %#v", matchPublisher.match.Teams)
 	}
 	if !reflect.DeepEqual(matchmaker.removedLobbyIDs, []string{"1", "2"}) || len(repo.lobbies) != 0 {
 		t.Fatalf("removed=%v remaining=%v", matchmaker.removedLobbyIDs, repo.lobbies)
