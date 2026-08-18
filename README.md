@@ -76,16 +76,16 @@ go run ./cmd/matcher -config ./config.yaml
 
 | 队列 | 绑定路由键 | 当前服务角色 |
 |---|---|---|
-| `matchmaking.request.queue` | `matchmaking.request` | 本服务消费 |
-| `matchmaking.cancel.queue` | `matchmaking.cancel` | 本服务消费 |
-| `matchmaking.lobby.queue` | `matchmaking.lobby` | 本服务发布，Lobby 消费 |
-| `match.biz.queue` | `match.create`、`match.update` | Matcher/Allocator 发布，业务服务消费完整 Match |
-| `match.server-allocator.queue` | `match.create` | Matcher 发布，服务器分配服务消费 |
+| `matcher.lobby.enqueue` | `lobby.matchmaking.enqueue` | 本服务消费 |
+| `matcher.lobby.cancel` | `matchmaking.cancel` | 本服务消费 |
+| `lobby.lobby.update` | `lobby.update` | 本服务发布，Lobby 消费 |
+| `lobby.match.update` | `match.create`、`match.update` | Matcher/Allocator 发布，业务服务消费完整 Match |
+| `allocator.match.create` | `match.create` | Matcher 发布，服务器分配服务消费 |
 
 比赛消息流只有以下两步：
 
-1. Matcher 组队成功，发布 `status=WAITING_FOR_SERVER` 且 `server=null` 的完整 Match 到 `match.create`。`match.biz.queue` 和 `match.server-allocator.queue` 都会收到该消息。
-2. 服务器分配服务消费 `match.create`，在同一个完整 Match 上补充 `server.ip`、将状态更新为 `IN_PROGRESS`，再发布到 `match.update`。只有 `match.biz.queue` 绑定该路由键。
+1. Matcher 组队成功，发布 `status=WAITING_FOR_SERVER` 且 `server=null` 的完整 Match 到 `match.create`。`lobby.match.update` 和 `allocator.match.create` 都会收到该消息。
+2. 服务器分配服务消费 `match.create`，在同一个完整 Match 上补充 `server.ip`、将状态更新为 `IN_PROGRESS`，再发布到 `match.update`。只有 `lobby.match.update` 绑定该路由键。
 
 ## 当前注册的消费者路由
 
@@ -93,8 +93,8 @@ go run ./cmd/matcher -config ./config.yaml
 
 | 消费队列 | 路由键 | 入站模型 |
 |---|---|---|
-| `matchmaking.request.queue` | `matchmaking.request` | `domain/lobby.Lobby` |
-| `matchmaking.cancel.queue` | `matchmaking.cancel` | `domain/lobby.Lobby` |
+| `matcher.lobby.enqueue` | `lobby.matchmaking.enqueue` | `domain/lobby.Lobby` |
+| `matcher.lobby.cancel` | `matchmaking.cancel` | `domain/lobby.Lobby` |
 
 入站消息直接反序列化为领域 `lobby.Lobby`，再交给 `matchmaking.UseCase` 路由到对应游戏模式的 `Matchmaker`。
 
@@ -124,7 +124,7 @@ go run ./cmd/matcher -config ./config.yaml
 
 | 路由键 | 模型 | 触发条件 | 说明 |
 |---|---|---|---|
-| `matchmaking.lobby` | `domain/matchmaking.LobbyEvent` | 大厅状态变化 | 更新单个业务大厅状态 |
+| `lobby.update` | `domain/matchmaking.LobbyEvent` | 大厅状态变化 | 更新单个业务大厅状态 |
 | `match.create` | `domain/matchmaking.Match` | 自然组队成功 | 同时通知业务服务和服务器分配服务 |
 
 ### `LobbyEvent`

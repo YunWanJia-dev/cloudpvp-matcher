@@ -8,14 +8,14 @@ import (
 )
 
 const (
-	RequestQueue              = "matchmaking.request.queue"
-	RequestRoutingKey         = "matchmaking.request"
-	CancelQueue               = "matchmaking.cancel.queue"
+	RequestQueue              = "matcher.lobby.enqueue"
+	EnqueueRoutingKey         = "lobby.matchmaking.enqueue"
+	CancelQueue               = "matcher.lobby.cancel"
 	CancelRoutingKey          = "matchmaking.cancel"
-	LobbyQueue                = "matchmaking.lobby.queue"
-	LobbyRoutingKey           = "matchmaking.lobby"
-	MatchBizQueue             = "match.biz.queue"
-	MatchServerAllocatorQueue = "match.server-allocator.queue"
+	LobbyQueue                = "lobby.lobby.update"
+	LobbyRoutingKey           = "lobby.update"
+	MatchBizQueue             = "lobby.match.update"
+	MatchServerAllocatorQueue = "allocator.match.create"
 	MatchCreateRoutingKey     = "match.create"
 	MatchUpdateRoutingKey     = "match.update"
 )
@@ -37,7 +37,7 @@ func DeclareTopology(connection *amqp.Connection, exchangeName string) error {
 		queue      string
 		routingKey string
 	}{
-		{queue: RequestQueue, routingKey: RequestRoutingKey},
+		{queue: RequestQueue, routingKey: EnqueueRoutingKey},
 		{queue: CancelQueue, routingKey: CancelRoutingKey},
 		{queue: LobbyQueue, routingKey: LobbyRoutingKey},
 		{queue: MatchBizQueue, routingKey: MatchCreateRoutingKey},

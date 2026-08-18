@@ -14,7 +14,7 @@ func TestLobbyEventContract(t *testing.T) {
 	if event.LobbyID != "123" || event.Status != domainmatchmaking.LobbyStatusWaiting || event.Reason != "cancelled" {
 		t.Fatalf("LobbyEvent = %#v", event)
 	}
-	if lobbyRoutingKey != "matchmaking.lobby" {
+	if lobbyRoutingKey != "lobby.update" {
 		t.Fatalf("lobbyRoutingKey = %q", lobbyRoutingKey)
 	}
 	body, err := json.Marshal(event)
@@ -35,10 +35,10 @@ func TestMatchRoutingKey(t *testing.T) {
 
 // TestMatchQueueTopologyNames 校验 Biz 与 Allocator 使用独立队列。
 func TestMatchQueueTopologyNames(t *testing.T) {
-	if mq.MatchBizQueue != "match.biz.queue" {
+	if mq.MatchBizQueue != "lobby.match.update" {
 		t.Fatalf("MatchBizQueue = %q", mq.MatchBizQueue)
 	}
-	if mq.MatchServerAllocatorQueue != "match.server-allocator.queue" {
+	if mq.MatchServerAllocatorQueue != "allocator.match.create" {
 		t.Fatalf("MatchServerAllocatorQueue = %q", mq.MatchServerAllocatorQueue)
 	}
 	if mq.MatchUpdateRoutingKey != "match.update" {
