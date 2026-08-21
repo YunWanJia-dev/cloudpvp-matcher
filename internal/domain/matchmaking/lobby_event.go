@@ -14,10 +14,11 @@ const (
 type LobbyEvent struct {
 	LobbyID string      `json:"lobby_id"`
 	Status  LobbyStatus `json:"status"`
+	MatchID string      `json:"match_id,omitempty"`
 	Reason  string      `json:"reason,omitempty"`
 }
 
 // NewLobbyEvent 创建大厅状态更新消息。
-func NewLobbyEvent(lobbyID string, status LobbyStatus, reason string) LobbyEvent {
-	return LobbyEvent{LobbyID: lobbyID, Status: status, Reason: reason}
+func NewLobbyEvent(lobbyID string, status LobbyStatus, matchID string, reason string) LobbyEvent {
+	return LobbyEvent{LobbyID: lobbyID, Status: status, MatchID: matchID, Reason: reason}
 }

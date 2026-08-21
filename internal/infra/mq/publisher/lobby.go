@@ -22,6 +22,6 @@ func NewLobbyPublisher(publisher *Publisher) *LobbyPublisher {
 }
 
 // PublishLobbyStatus 发布 lobby 状态更新事件。
-func (p *LobbyPublisher) PublishLobbyStatus(ctx context.Context, lobbyID string, status domainmatchmaking.LobbyStatus, reason string) error {
-	return p.publisher.publish(ctx, lobbyRoutingKey, domainmatchmaking.NewLobbyEvent(lobbyID, status, reason))
+func (p *LobbyPublisher) PublishLobbyStatus(ctx context.Context, lobbyID string, status domainmatchmaking.LobbyStatus, matchID string, reason string) error {
+	return p.publisher.publish(ctx, lobbyRoutingKey, domainmatchmaking.NewLobbyEvent(lobbyID, status, matchID, reason))
 }

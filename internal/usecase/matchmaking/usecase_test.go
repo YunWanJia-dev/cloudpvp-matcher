@@ -54,13 +54,15 @@ func (m *testLockManager) WithLobbyLock(ctx context.Context, lobbyIDs []string, 
 type testLobbyPublisher struct {
 	lobbyID     string
 	lobbyStatus domainmatchmaking.LobbyStatus
+	lobbyMatchID string
 	lobbyReason string
 }
 
 // PublishLobbyStatus 记录测试状态事件。
-func (p *testLobbyPublisher) PublishLobbyStatus(_ context.Context, lobbyID string, status domainmatchmaking.LobbyStatus, reason string) error {
+func (p *testLobbyPublisher) PublishLobbyStatus(_ context.Context, lobbyID string, status domainmatchmaking.LobbyStatus, matchID string, reason string) error {
 	p.lobbyID = lobbyID
 	p.lobbyStatus = status
+	p.lobbyMatchID = matchID
 	p.lobbyReason = reason
 	return nil
 }
@@ -133,7 +135,7 @@ func TestSubmitAndCancelUseSameLobbyLock(t *testing.T) {
 	if err := uc.AddMatchmaker(matchmaker); err != nil {
 		t.Fatal(err)
 	}
-	lobby := &domainlobby.Lobby{LobbyID: "1", GameMode: config.GameModeCSGO5v5, PlayerCount: 1}
+	lobby := &domainlobby.Lobby{LobbyID: "1", GameMode: config.GameModeCSGO5v5, Players: []int64{1}}
 
 	if err := uc.SubmitLobby(context.Background(), lobby); err != nil {
 		t.Fatalf("SubmitLobby() error = %v", err)
@@ -173,6 +175,7 @@ func TestRunMatchCyclePublishesCompleteWaitingForServerMatch(t *testing.T) {
 	lobby2 := testLobby("2", 5)
 	repo := &testLobbyRepository{lobbies: map[string]*domainlobby.Lobby{"1": lobby1, "2": lobby2}}
 	matchPublisher := &testMatchPublisher{}
+	lobbyPublisher := &testLobbyPublisher{}
 	lockManager := &testLockManager{}
 	candidate := &domainmatchmaking.Match{
 		GameMode: config.GameModeCSGO5v5,
@@ -182,7 +185,7 @@ func TestRunMatchCyclePublishesCompleteWaitingForServerMatch(t *testing.T) {
 		},
 	}
 	matchmaker := &testMatchmaker{findResults: []*domainmatchmaking.Match{candidate}, queued: true}
-	uc := NewUseCase(repo, &testLobbyPublisher{}, matchPublisher, lockManager)
+	uc := NewUseCase(repo, lobbyPublisher, matchPublisher, lockManager)
 	if err := uc.AddMatchmaker(matchmaker); err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +200,10 @@ func TestRunMatchCyclePublishesCompleteWaitingForServerMatch(t *testing.T) {
 	if matchPublisher.match.MatchID == "" || matchPublisher.match.Status != domainmatchmaking.MatchStatusWaitingForServer || matchPublisher.match.Server != nil {
 		t.Fatalf("match = %#v", matchPublisher.match)
 	}
-	if len(matchPublisher.match.Teams) != 2 || len(matchPublisher.match.Teams[0].Members) != 0 || len(matchPublisher.match.Teams[1].Members) != 0 {
+	if lobbyPublisher.lobbyStatus != domainmatchmaking.LobbyStatusMatching || lobbyPublisher.lobbyMatchID != matchPublisher.match.MatchID {
+		t.Fatalf("lobby update status=%q match_id=%q match_id_expected=%q", lobbyPublisher.lobbyStatus, lobbyPublisher.lobbyMatchID, matchPublisher.match.MatchID)
+	}
+	if len(matchPublisher.match.Teams) != 2 || len(matchPublisher.match.Teams[0].Members) != 5 || len(matchPublisher.match.Teams[1].Members) != 5 {
 		t.Fatalf("teams = %#v", matchPublisher.match.Teams)
 	}
 	if !reflect.DeepEqual(matchmaker.removedLobbyIDs, []string{"1", "2"}) || len(repo.lobbies) != 0 {
@@ -210,5 +216,9 @@ func TestRunMatchCyclePublishesCompleteWaitingForServerMatch(t *testing.T) {
 
 // testLobby 创建指定人数的测试大厅。
 func testLobby(lobbyID string, memberCount int) *domainlobby.Lobby {
-	return &domainlobby.Lobby{LobbyID: lobbyID, GameMode: config.GameModeCSGO5v5, PlayerCount: memberCount}
+	players := make([]int64, memberCount)
+	for i := range players {
+		players[i] = int64(i + 1)
+	}
+	return &domainlobby.Lobby{LobbyID: lobbyID, GameMode: config.GameModeCSGO5v5, Players: players}
 }

@@ -10,8 +10,8 @@ import (
 
 // TestLobbyEventContract 校验大厅状态回传使用统一消息结构。
 func TestLobbyEventContract(t *testing.T) {
-	event := domainmatchmaking.NewLobbyEvent("123", domainmatchmaking.LobbyStatusWaiting, "cancelled")
-	if event.LobbyID != "123" || event.Status != domainmatchmaking.LobbyStatusWaiting || event.Reason != "cancelled" {
+	event := domainmatchmaking.NewLobbyEvent("123", domainmatchmaking.LobbyStatusWaiting, "match-1", "cancelled")
+	if event.LobbyID != "123" || event.Status != domainmatchmaking.LobbyStatusWaiting || event.MatchID != "match-1" || event.Reason != "cancelled" {
 		t.Fatalf("LobbyEvent = %#v", event)
 	}
 	if lobbyRoutingKey != "lobby.update" {
@@ -21,7 +21,7 @@ func TestLobbyEventContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
-	if string(body) != `{"lobby_id":"123","status":"WAITING","reason":"cancelled"}` {
+	if string(body) != `{"lobby_id":"123","status":"WAITING","match_id":"match-1","reason":"cancelled"}` {
 		t.Fatalf("json = %s", body)
 	}
 }

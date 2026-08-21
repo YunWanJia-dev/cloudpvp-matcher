@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -86,7 +87,7 @@ func (uc *UseCase) SubmitLobby(ctx context.Context, lobby *domainlobby.Lobby) er
 
 	return uc.withLobbyLock(ctx, []string{lobby.LobbyID}, func(ctx context.Context) error {
 		if err := matchmaker.Submit(ctx, lobby); err != nil {
-			if publishErr := uc.lobbyPublisher.PublishLobbyStatus(ctx, lobby.LobbyID, domainmatchmaking.LobbyStatusWaiting, err.Error()); publishErr != nil {
+			if publishErr := uc.lobbyPublisher.PublishLobbyStatus(ctx, lobby.LobbyID, domainmatchmaking.LobbyStatusWaiting, "", err.Error()); publishErr != nil {
 				return fmt.Errorf("提交匹配失败并且发布等待状态失败 lobby_id=%s submit_error=%v: %w", lobby.LobbyID, err, publishErr)
 			}
 			return err
@@ -96,7 +97,7 @@ func (uc *UseCase) SubmitLobby(ctx context.Context, lobby *domainlobby.Lobby) er
 			_ = matchmaker.Cancel(ctx, lobby.LobbyID)
 			return fmt.Errorf("保存原始 lobby 失败 lobby_id=%s: %w", lobby.LobbyID, err)
 		}
-		if err := uc.lobbyPublisher.PublishLobbyStatus(ctx, lobby.LobbyID, domainmatchmaking.LobbyStatusMatching, ""); err != nil {
+		if err := uc.lobbyPublisher.PublishLobbyStatus(ctx, lobby.LobbyID, domainmatchmaking.LobbyStatusMatching, "", ""); err != nil {
 			return fmt.Errorf("发布 lobby 入队事件失败 lobby_id=%s: %w", lobby.LobbyID, err)
 		}
 		return nil
@@ -129,7 +130,7 @@ func (uc *UseCase) CancelLobby(ctx context.Context, lobbyID string) error {
 		if err := uc.lobbyRepo.Remove(ctx, lobbyID); err != nil {
 			return err
 		}
-		if err := uc.lobbyPublisher.PublishLobbyStatus(ctx, lobbyID, domainmatchmaking.LobbyStatusWaiting, ""); err != nil {
+		if err := uc.lobbyPublisher.PublishLobbyStatus(ctx, lobbyID, domainmatchmaking.LobbyStatusWaiting, "", ""); err != nil {
 			return fmt.Errorf("发布 lobby 取消状态失败 lobby_id=%s: %w", lobbyID, err)
 		}
 		return nil
@@ -202,6 +203,7 @@ func (uc *UseCase) completeMatch(ctx context.Context, matchmaker domainmatch.Mat
 		return fmt.Errorf("match lobby_ids 不能为空")
 	}
 
+	lobbySnapshots := make(map[string]*domainlobby.Lobby, len(lobbyIDs))
 	for _, lobbyID := range lobbyIDs {
 		lobby, err := uc.lobbyRepo.FindByLobbyID(ctx, lobbyID)
 		if err != nil {
@@ -214,6 +216,18 @@ func (uc *UseCase) completeMatch(ctx context.Context, matchmaker domainmatch.Mat
 			}
 			return nil
 		}
+		lobbySnapshots[lobbyID] = lobby
+	}
+
+	// 队伍成员必须来自入队时保存的 lobby 快照，保持队伍和大厅内的玩家顺序稳定。
+	for teamIndex := range match.Teams {
+		members := make([]domainmatchmaking.Member, 0)
+		for _, lobbyID := range match.Teams[teamIndex].LobbyIDs {
+			for _, playerID := range lobbySnapshots[lobbyID].Players {
+				members = append(members, domainmatchmaking.Member{PlayerID: strconv.FormatInt(playerID, 10)})
+			}
+		}
+		match.Teams[teamIndex].Members = members
 	}
 
 	now := time.Now().UTC()
@@ -225,6 +239,12 @@ func (uc *UseCase) completeMatch(ctx context.Context, matchmaker domainmatch.Mat
 	match.Server = nil
 	match.UpdatedAt = now
 
+	// 先通知业务大厅比赛已建立，保持 MATCHING 状态并写入 match_id，确保其先于 match.create 落库。
+	for _, lobbyID := range lobbyIDs {
+		if err := uc.lobbyPublisher.PublishLobbyStatus(ctx, lobbyID, domainmatchmaking.LobbyStatusMatching, match.MatchID, ""); err != nil {
+			return fmt.Errorf("发布匹配大厅状态失败 match_id=%s lobby_id=%s: %w", match.MatchID, lobbyID, err)
+		}
+	}
 	if err := uc.matchPublisher.PublishMatch(ctx, match); err != nil {
 		return fmt.Errorf("发布完整比赛失败 match_id=%s: %w", match.MatchID, err)
 	}

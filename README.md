@@ -104,7 +104,7 @@ go run ./cmd/matcher -config ./config.yaml
 {
   "lobby_id": "lobby-001",
   "game_mode": "CS2/5v5/competitive",
-  "player_count": 1,
+  "players": [76561198000000001],
   "created_at": "2026-05-30T12:00:00Z"
 }
 ```
@@ -115,7 +115,7 @@ go run ./cmd/matcher -config ./config.yaml
 |---|---|---|
 | `lobby_id` | string | 队伍或房间 ID，必填 |
 | `game_mode` | string | 游戏模式，必填 |
-| `player_count` | int | 参与匹配的玩家数量 |
+| `players` | int64[] | 参与匹配的玩家 ID 列表 |
 | `created_at` | time | 请求创建时间 |
 
 ## 本服务发布的路由和模型
@@ -133,9 +133,12 @@ go run ./cmd/matcher -config ./config.yaml
 {
   "lobby_id": "lobby-001",
   "status": "MATCHING",
+  "match_id": "match-001",
   "reason": ""
 }
 ```
+
+匹配完成时，Matcher 会先为每个参与比赛的 Lobby 发布 `status=MATCHING` 和对应的 `match_id`，待这些更新发布成功后，再发布 `match.create`。Lobby 保持 `MATCHING` 状态，供后续确认比赛流程使用。
 
 ### `Match`
 
