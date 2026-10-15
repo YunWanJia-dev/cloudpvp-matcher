@@ -61,13 +61,14 @@ Use Conventional Commits:
 - Format: `<type>(<scope>): <subject>`
 - Common types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`, `build`, `ci`
 - Recommended `scope`: `queue`, `match-core`, `mmr`, `ticket`
-- Commit messages must describe behavior changes precisely; avoid generic text like "fix issue" or "optimize code"
+- Write the description (`<subject>`) in Chinese; keep `<type>` (such as `feat` or `refactor`) and `<scope>` unchanged.
+- Commit messages must describe behavior changes precisely; avoid generic descriptions like "修复问题" or "优化代码".
 
 Examples:
 
-- `feat(match-core): add mode-bucket candidate pool building flow`
-- `fix(queue): prevent duplicated rematch from timeout ticket double dequeue`
-- `refactor(ticket): split ticket validation and enqueue flow with tests`
+- `feat(match-core): 新增按模式分组构建候选池的流程`
+- `fix(queue): 防止超时票据重复出队触发重复匹配`
+- `refactor(ticket): 拆分票据校验与入队流程并补充测试`
 
 ## Review Guidelines
 
