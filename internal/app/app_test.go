@@ -8,7 +8,7 @@ import (
 
 // TestDecodeLobbyFromBizMessage 校验 biz lobby 的 MQ 消息可被 matcher 解析。
 func TestDecodeLobbyFromBizMessage(t *testing.T) {
-	body := []byte(`{"lobby_id":"123","game_mode":"CS2/5v5/competitive","player_count":1,"created_at":"2026-08-12T06:31:00Z"}`)
+	body := []byte(`{"lobby_id":"123","game_mode":"CS2/5v5/competitive","players":[76561198000000001],"created_at":"2026-08-12T06:31:00Z"}`)
 
 	lobby, err := decodeLobby(body)
 	if err != nil {
@@ -20,8 +20,8 @@ func TestDecodeLobbyFromBizMessage(t *testing.T) {
 	if lobby.GameMode != "CS2/5v5/competitive" {
 		t.Fatalf("GameMode = %q", lobby.GameMode)
 	}
-	if lobby.PlayerCount != 1 {
-		t.Fatalf("PlayerCount = %d", lobby.PlayerCount)
+	if len(lobby.Players) != 1 || lobby.Players[0] != 76561198000000001 {
+		t.Fatalf("Players = %v", lobby.Players)
 	}
 	if lobby.CreatedAt.IsZero() || lobby.UpdatedAt.IsZero() {
 		t.Fatal("CreatedAt and UpdatedAt must be populated")
@@ -42,7 +42,7 @@ func TestClassifyLobbyHandlingError(t *testing.T) {
 
 // TestDecodeLobbyFromCancelMessage 校验取消消息可复用同一 lobby 契约。
 func TestDecodeLobbyFromCancelMessage(t *testing.T) {
-	lobby, err := decodeLobby([]byte(`{"lobby_id":"456","game_mode":"CS2/5v5/competitive","player_count":1,"created_at":"2026-08-12T06:31:00Z"}`))
+	lobby, err := decodeLobby([]byte(`{"lobby_id":"456","game_mode":"CS2/5v5/competitive","players":[76561198000000001],"created_at":"2026-08-12T06:31:00Z"}`))
 	if err != nil {
 		t.Fatalf("decodeLobby() error = %v", err)
 	}

@@ -55,12 +55,12 @@ func (m *CSGO5v5Matchmaker) Submit(ctx context.Context, lobby *domainlobby.Lobby
 		return fmt.Errorf("csgo 5v5 matchmaker: unsupported game_mode=%s", lobby.GameMode)
 	}
 
-	playerCount := lobby.PlayerCount
-	if playerCount <= 0 {
+	memberCount := len(lobby.Players)
+	if memberCount <= 0 {
 		return fmt.Errorf("csgo 5v5 matchmaker: lobby member count must be positive lobby_id=%s", lobbyID)
 	}
-	if playerCount > csgo5v5TeamSize {
-		return fmt.Errorf("csgo 5v5 matchmaker: lobby member count exceeds 5 lobby_id=%s count=%d", lobbyID, playerCount)
+	if memberCount > csgo5v5TeamSize {
+		return fmt.Errorf("csgo 5v5 matchmaker: lobby member count exceeds 5 lobby_id=%s count=%d", lobbyID, memberCount)
 	}
 
 	queuedAt := lobby.CreatedAt
@@ -70,7 +70,7 @@ func (m *CSGO5v5Matchmaker) Submit(ctx context.Context, lobby *domainlobby.Lobby
 
 	return m.queueRepo.Enqueue(ctx, LobbyQueueEntry{
 		LobbyID:     lobbyID,
-		MemberCount: playerCount,
+		MemberCount: memberCount,
 		QueuedAt:    queuedAt,
 	})
 }
